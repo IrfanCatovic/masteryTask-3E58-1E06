@@ -8,6 +8,7 @@ import (
 
 	"masterytask/internal/config"
 	"masterytask/internal/db"
+	"masterytask/internal/document"
 
 	"github.com/gin-gonic/gin"
 )
@@ -24,13 +25,21 @@ func main() {
 
 	log.Println("DB connection OK")
 
+
+	if err := gormDB.AutoMigrate(&document.Document{}); err != nil {
+		log.Fatalf("Failed to run database migrations: %v", err)
+	}
+
 	// Start the server
 	router := gin.Default()
+	// Check server health
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status": "ok",
 		})
 	})
+
+	// Check database health
 	router.GET("/db-health", func(c *gin.Context) {
 		sqlDB, err := gormDB.DB()
 		if err != nil {
@@ -41,10 +50,8 @@ func main() {
 			})
 			return
 		}
-
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer cancel()
-
 		if err := sqlDB.PingContext(ctx); err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"status":   "error",
@@ -53,13 +60,13 @@ func main() {
 			})
 			return
 		}
-
 		c.JSON(http.StatusOK, gin.H{
 			"status":   "ok",
 			"database": "connected",
 		})
 	})
 
+	
 	if err := router.Run(":8080"); err != nil {
 		log.Fatalf("Failed to start HTTP server: %v", err)
 	}
