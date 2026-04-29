@@ -66,30 +66,8 @@ func main() {
 		})
 	})
 
-	// Create one hardcoded document to quickly verify DB insert flow.
-	router.POST("/documents/mock", func(c *gin.Context) {
-		doc := document.Document{
-			DocumentType:   "invoice",
-			SupplierName:   "Acme d.o.o.",
-			DocumentNumber: "INV-MOCK-001",
-			Status:         "uploaded",
-		}
-
-		if err := gormDB.Create(&doc).Error; err != nil { 
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"status":  "error",
-				"message": "failed to insert mock document",
-				"error":   err.Error(),
-			})
-			return
-		}
-
-		c.JSON(http.StatusCreated, gin.H{
-			"status":   "ok",
-			"message":  "mock document created",
-			"document": doc,
-		})
-	})
+	// Register domain routes from dedicated packages.
+	document.RegisterRoutes(router, gormDB)
 
 	if err := router.Run(":8080"); err != nil {
 		log.Fatalf("Failed to start HTTP server: %v", err)
