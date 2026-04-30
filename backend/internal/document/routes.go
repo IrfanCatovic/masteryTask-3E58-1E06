@@ -14,6 +14,14 @@ type createDocumentRequest struct {
 	SupplierName   string `json:"supplier_name"`
 	DocumentNumber string `json:"document_number"`
 	Status         string `json:"status"`
+	LineItems      []createLineItemRequest `json:"line_items"`
+}
+
+type createLineItemRequest struct {
+	Description string  `json:"description"`
+	Quantity    float64 `json:"quantity"`
+	UnitPrice   float64 `json:"unit_price"`
+	LineTotal   float64 `json:"line_total"`
 }
 
 type updateStatusRequest struct {
@@ -45,17 +53,20 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 		req.SupplierName = strings.TrimSpace(req.SupplierName)
 		req.DocumentNumber = strings.TrimSpace(req.DocumentNumber)
 		req.Status = strings.TrimSpace(req.Status)
-
-		if req.DocumentType == "" || req.SupplierName == "" || req.DocumentNumber == "" {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"status":  "error",
-				"message": "document_type, supplier_name, and document_number are required",
-			})
-			return
-		}
+		for i := range req.LineItems {
+			req.LineItems[i].Description = strings.TrimSpace(req.LineItems[i].Description)
+		} //ovde se samo stringovi ciste od razmaka u svim poljima sa stringovima
+		//treba nam for jer jedan dokument ima slice od vise itema
 
 		if req.Status == "" {
 			req.Status = "uploaded"
+		}
+		if _, ok := allowedStatuses[req.Status]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": "status must be one of: uploaded, needs_review, validated, rejected",
+			})
+			return
 		}
 
 		doc := Document{
@@ -64,8 +75,34 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			DocumentNumber: req.DocumentNumber,
 			Status:         req.Status,
 		}
+		
+		doc.LineItems = make([]LineItem, 0, len(req.LineItems))
+		for _, item := range req.LineItems {
+			doc.LineItems = append(doc.LineItems, LineItem{
+				Description: item.Description,
+				Quantity:    item.Quantity,
+				UnitPrice:   item.UnitPrice,
+				LineTotal:   item.LineTotal,
+			})
+		}
+		issues := ValidateDocument(doc)
+		if len(issues) > 0 {
+			// If we found issues, document should move into review state.
+			doc.Status = "needs_review"
+		}
 
-		if err := gormDB.Create(&doc).Error; err != nil {
+		tx := gormDB.Begin()
+		if tx.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to start database transaction",
+				"error":   tx.Error.Error(),
+			})
+			return
+		}
+
+		if err := tx.Create(&doc).Error; err != nil {
+			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"status":  "error",
 				"message": "failed to create document",
@@ -73,11 +110,52 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			})
 			return
 		}
+		// Persist line items only after document has an ID.
+		if len(doc.LineItems) > 0 {
+			for i := range doc.LineItems {
+				doc.LineItems[i].DocumentID = doc.ID //doc.ID npr 17, doc.LineItems[0].DocumentID = 17 i popuni za sve iteme u slice-u doc.LineItems
+			}
+			if err := tx.Create(&doc.LineItems).Error; err != nil {//ovde cuvamo line items u bazu
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"status":  "error",
+					"message": "failed to save line items",
+					"error":   err.Error(),
+				})
+				return
+			}
+		}
+		//ovde cuvamo validation issues u bazu
+		if len(issues) > 0 {
+			for i := range issues {
+				issues[i].DocumentID = doc.ID //doc.ID npr 17, issues[0].DocumentID = 17 i popuni za sve issue-e u slice-u issues
+
+			}
+			if err := tx.Create(&issues).Error; err != nil {//ovde cuvamo validation issues u bazu
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"status":  "error",
+					"message": "failed to save validation issues",
+					"error":   err.Error(),
+				})
+				return
+			}
+		}
+		if err := tx.Commit().Error; err != nil {//ako prodje uspesno dodavanje dokumenta u bazu, 
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to commit database transaction",
+				"error":   err.Error(),
+			})
+			return
+		}
 
 		c.JSON(http.StatusCreated, gin.H{
-			"status":   "ok",
-			"message":  "document created",
-			"document": doc,
+			"status":       "ok",
+			"message":      "document created",
+			"document":     doc,
+			"issues_count": len(issues),
+			"issues":       issues,
 		})
 	})
 
