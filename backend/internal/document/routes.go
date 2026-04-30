@@ -194,7 +194,7 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 		}
 
 		if err := gormDB.Model(&doc).Update("status", req.Status).Error; err != nil {
-			//ovde azuriramo status documenta
+			//ovde azuriramo status u bazi
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"status":  "error",
 				"message": "failed to update status",
@@ -202,7 +202,7 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			})
 			return
 		}
-		doc.Status = req.Status //ovde azuriramo status documenta u bazi
+		doc.Status = req.Status //ovde azuriramo status documenta u structu za odgovor
 
 		c.JSON(http.StatusOK, gin.H{
 			"status":   "ok",

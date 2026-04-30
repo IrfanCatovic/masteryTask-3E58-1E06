@@ -26,7 +26,8 @@ func main() {
 	log.Println("DB connection OK")
 
 
-	if err := gormDB.AutoMigrate(&document.Document{}); err != nil {
+	if err := gormDB.AutoMigrate(&document.Document{}, 
+		&document.LineItem{}); err != nil {
 		log.Fatalf("Failed to run database migrations: %v", err)
 	}
 
