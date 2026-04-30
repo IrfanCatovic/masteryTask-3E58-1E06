@@ -198,7 +198,10 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 		}
 
 		var doc Document
-		if err := gormDB.First(&doc, uint(id)).Error; err != nil {
+		if err := gormDB.
+			Preload("LineItems").
+			Preload("Issues").
+			First(&doc, uint(id)).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				c.JSON(http.StatusNotFound, gin.H{
 					"status":  "error",
