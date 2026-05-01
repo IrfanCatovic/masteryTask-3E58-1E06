@@ -87,6 +87,29 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			})
 		}
 		issues := ValidateDocument(doc)
+		// Duplicate document number detection (core requirement).
+		if strings.TrimSpace(doc.DocumentNumber) != "" {
+			var duplicateCount int64
+			if err := gormDB.Model(&Document{}).
+				Where("document_number = ?", doc.DocumentNumber).
+				Count(&duplicateCount).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"status":  "error",
+					"message": "failed to check duplicate document number",
+					"error":   err.Error(),
+				})
+				return
+			}
+			if duplicateCount > 0 {
+				issues = append(issues, ValidationIssue{
+					Code:      "DUPLICATE_DOCUMENT_NUMBER",
+					Message:   "document number already exists",
+					Severity:  "error",
+					FieldName: "document_number",
+					Resolved:  false,
+				})
+			}
+		}
 		if len(issues) > 0 {
 			// If we found issues, document should move into review state.
 			doc.Status = "needs_review"

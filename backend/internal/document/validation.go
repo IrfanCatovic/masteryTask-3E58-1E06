@@ -9,6 +9,8 @@ import (
 const (
 	IssueCodeMissingField      = "MISSING_FIELD"
 	IssueCodeInvalidLineTotal  = "INVALID_LINE_TOTAL"
+	IssueCodeInvalidTotal      = "INVALID_TOTAL"
+	IssueCodeMissingCurrency   = "MISSING_CURRENCY"
 	IssueSeverityError         = "error"
 	DefaultMoneyEpsilon float64 = 0.01
 )
@@ -39,6 +41,35 @@ func ValidateDocument(doc Document) []ValidationIssue {
 				Message:    "line total does not match quantity * unit_price",
 				Severity:   IssueSeverityError,
 				FieldName:  "line_total",
+				Resolved:   false,
+			})
+		}
+	}
+
+	// Financial consistency checks.
+	if doc.Total > 0 && strings.TrimSpace(doc.Currency) == "" {
+		issues = append(issues, ValidationIssue{
+			DocumentID: doc.ID,
+			Code:       IssueCodeMissingCurrency,
+			Message:    "currency is required when total is present",
+			Severity:   IssueSeverityError,
+			FieldName:  "currency",
+			Resolved:   false,
+		})
+	}
+
+	if doc.Subtotal != 0 || doc.TaxRate != 0 || doc.DiscountRate != 0 {
+		discountAmount := doc.Subtotal * (doc.DiscountRate / 100.0)
+		taxable := doc.Subtotal - discountAmount
+		taxAmount := taxable * (doc.TaxRate / 100.0)
+		expectedTotal := taxable + taxAmount
+		if !moneyEquals(expectedTotal, doc.Total) {
+			issues = append(issues, ValidationIssue{
+				DocumentID: doc.ID,
+				Code:       IssueCodeInvalidTotal,
+				Message:    "total does not match subtotal/tax_rate/discount_rate calculation",
+				Severity:   IssueSeverityError,
+				FieldName:  "total",
 				Resolved:   false,
 			})
 		}
