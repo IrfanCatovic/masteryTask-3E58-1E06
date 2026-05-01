@@ -37,6 +37,16 @@ func registerUploadRoutes(router *gin.Engine, gormDB *gorm.DB) {
 		}
 
 		issues := ValidateDocument(doc)
+		dupIssues, err := issuesForDuplicateDocumentNumber(gormDB, doc.DocumentNumber)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to check duplicate document number",
+				"error":   err.Error(),
+			})
+			return
+		}
+		issues = append(issues, dupIssues...)
 		if len(issues) > 0 {
 			doc.Status = "needs_review"
 		}

@@ -87,29 +87,16 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			})
 		}
 		issues := ValidateDocument(doc)
-		// Duplicate document number detection (core requirement).
-		if strings.TrimSpace(doc.DocumentNumber) != "" {
-			var duplicateCount int64
-			if err := gormDB.Model(&Document{}).
-				Where("document_number = ?", doc.DocumentNumber).
-				Count(&duplicateCount).Error; err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"status":  "error",
-					"message": "failed to check duplicate document number",
-					"error":   err.Error(),
-				})
-				return
-			}
-			if duplicateCount > 0 {
-				issues = append(issues, ValidationIssue{
-					Code:      "DUPLICATE_DOCUMENT_NUMBER",
-					Message:   "document number already exists",
-					Severity:  "error",
-					FieldName: "document_number",
-					Resolved:  false,
-				})
-			}
+		dupIssues, err := issuesForDuplicateDocumentNumber(gormDB, doc.DocumentNumber)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to check duplicate document number",
+				"error":   err.Error(),
+			})
+			return
 		}
+		issues = append(issues, dupIssues...)
 		if len(issues) > 0 {
 			// If we found issues, document should move into review state.
 			doc.Status = "needs_review"
@@ -315,4 +302,27 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			"document": doc,
 		})
 	})
+}
+
+// issuesForDuplicateDocumentNumber returns a DUPLICATE_DOCUMENT_NUMBER issue when that number already exists.
+func issuesForDuplicateDocumentNumber(db *gorm.DB, documentNumber string) ([]ValidationIssue, error) {
+	if strings.TrimSpace(documentNumber) == "" {
+		return nil, nil
+	}
+	var n int64
+	if err := db.Model(&Document{}).
+		Where("document_number = ?", documentNumber).
+		Count(&n).Error; err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	return []ValidationIssue{{
+		Code:      "DUPLICATE_DOCUMENT_NUMBER",
+		Message:   "document number already exists",
+		Severity:  IssueSeverityError,
+		FieldName: "document_number",
+		Resolved:  false,
+	}}, nil
 }
