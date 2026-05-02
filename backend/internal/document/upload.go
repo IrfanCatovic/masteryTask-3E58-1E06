@@ -1,8 +1,10 @@
 package document
 
 import (
+	"bytes"
 	"encoding/csv"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/ledongthuc/pdf"
 	"gorm.io/gorm"
 )
 
@@ -143,9 +146,47 @@ func parseUploadedDocument(fileHeader *multipart.FileHeader) (parseResult, error
 		return parseCSVDocument(file)
 	case ".txt":
 		return parseTXTDocument(file)
+	case ".pdf":
+		return parsePDFDocument(file)
 	default:
-		return parseResult{}, errors.New("unsupported file type; use .csv or .txt")
+		return parseResult{}, errors.New("unsupported file type; use .csv, .txt, or .pdf")
 	}
+}
+
+// parsePDFDocument extracts plain text with github.com/ledongthuc/pdf and reuses the TXT parser.
+// Image-only (scanned) PDFs often yield no text layer upload still succeeds with a validation issue.
+func parsePDFDocument(r io.Reader) (parseResult, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return parseResult{}, err
+	}
+	pdfReader, err := pdf.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		return parseResult{}, fmt.Errorf("invalid or encrypted pdf: %w", err)
+	}
+	textReader, err := pdfReader.GetPlainText()
+	if err != nil {
+		return parseResult{}, fmt.Errorf("pdf text extraction failed: %w", err)
+	}
+	rawText, err := io.ReadAll(textReader)
+	if err != nil {
+		return parseResult{}, err
+	}
+	text := strings.TrimSpace(string(rawText))
+
+	res, err := parseTXTDocument(strings.NewReader(text))
+	if err != nil {
+		return parseResult{}, err
+	}
+	if text == "" {
+		res.ParseIssues = append(res.ParseIssues, ValidationIssue{
+			Code:      "PDF_NO_EXTRACTABLE_TEXT",
+			Message:   "no extractable text in this pdf (image-only scans need OCR)",
+			Severity:  IssueSeverityError,
+			Resolved:  false,
+		})
+	}
+	return res, nil
 }
 
 // parseResult vraća parsirani dokument zajedno sa "soft" issue-ima

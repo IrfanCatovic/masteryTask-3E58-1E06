@@ -18,7 +18,7 @@ export function UploadForm({ onSuccess, onDuplicate }: Props) {
     const input = e.currentTarget.elements.namedItem('file') as HTMLInputElement
     const file = input.files?.[0]
     if (!file) {
-      setError('Choose a CSV or TXT file.')
+      setError('Choose a CSV, TXT, or PDF file.')
       return
     }
     setBusy(true)
@@ -57,13 +57,14 @@ export function UploadForm({ onSuccess, onDuplicate }: Props) {
             Upload document
           </label>
           <p className="mt-1 text-sm text-slate-500">
-            CSV or TXT — multipart field name <code className="font-mono text-slate-700">file</code>.
+            CSV, TXT, or PDF — field name <code className="font-mono text-slate-700">file</code>. PDFs
+            use text extraction (scanned pages may need review).
           </p>
           <input
             id="upload-file"
             name="file"
             type="file"
-            accept=".csv,.txt,text/csv,text/plain"
+            accept=".csv,.txt,.pdf,text/csv,text/plain,application/pdf"
             disabled={busy}
             className="mt-3 block w-full text-sm text-slate-700 file:mr-4 file:rounded-lg file:border-0 file:bg-slate-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-slate-800"
           />
