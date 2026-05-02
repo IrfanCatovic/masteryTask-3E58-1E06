@@ -4,14 +4,16 @@ package document
 import (
 	"math"
 	"strings"
+	"time"
 )
 
 const (
 	IssueCodeMissingField      = "MISSING_FIELD"
 	IssueCodeInvalidLineTotal  = "INVALID_LINE_TOTAL"
 	IssueCodeInvalidTotal      = "INVALID_TOTAL"
-	IssueCodeMissingCurrency   = "MISSING_CURRENCY"
-	IssueSeverityError         = "error"
+	IssueCodeMissingCurrency    = "MISSING_CURRENCY"
+	IssueCodeInvalidDateRange   = "INVALID_DATE_RANGE"
+	IssueSeverityError          = "error"
 	DefaultMoneyEpsilon float64 = 0.01
 )
 
@@ -70,6 +72,24 @@ func ValidateDocument(doc Document) []ValidationIssue {
 				Message:    "total does not match subtotal/tax_rate/discount_rate calculation",
 				Severity:   IssueSeverityError,
 				FieldName:  "total",
+				Resolved:   false,
+			})
+		}
+	}
+
+	// Date rules: when both are set, due must not be before issue (calendar day).
+	if doc.IssueDate != nil && doc.DueDate != nil {
+		iy, im, id := doc.IssueDate.Date()
+		dy, dm, dd := doc.DueDate.Date()
+		issueDay := time.Date(iy, im, id, 0, 0, 0, 0, time.UTC)
+		dueDay := time.Date(dy, dm, dd, 0, 0, 0, 0, time.UTC)
+		if dueDay.Before(issueDay) {
+			issues = append(issues, ValidationIssue{
+				DocumentID: doc.ID,
+				Code:       IssueCodeInvalidDateRange,
+				Message:    "due_date must be on or after issue_date",
+				Severity:   IssueSeverityError,
+				FieldName:  "due_date",
 				Resolved:   false,
 			})
 		}
