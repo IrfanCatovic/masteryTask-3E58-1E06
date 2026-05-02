@@ -188,6 +188,21 @@ func parseCSVDocument(r io.Reader) (Document, error) {
 		doc.Status = "uploaded"
 	}
 
+	if s := getOptional(headers, first, "issue_date"); s != "" {
+		t, err := parseYYYYMMDDOptional(s)
+		if err != nil {
+			return Document{}, errors.New("issue_date must be YYYY-MM-DD or empty")
+		}
+		doc.IssueDate = t
+	}
+	if s := getOptional(headers, first, "due_date"); s != "" {
+		t, err := parseYYYYMMDDOptional(s)
+		if err != nil {
+			return Document{}, errors.New("due_date must be YYYY-MM-DD or empty")
+		}
+		doc.DueDate = t
+	}
+
 	// Optional line-item columns from each row.
 	//ovde proveravamo da li imamo kolone description, quantity, unit_price, line_total
 	_, hasDesc := headers["description"]
@@ -281,6 +296,18 @@ func parseTXTDocument(r io.Reader) (Document, error) {
 			doc.DiscountRate = parseFloat(val)
 		case "total":
 			doc.Total = parseFloat(val)
+		case "issue_date":
+			t, err := parseYYYYMMDDOptional(val)
+			if err != nil {
+				return Document{}, errors.New("issue_date must be YYYY-MM-DD or empty")
+			}
+			doc.IssueDate = t
+		case "due_date":
+			t, err := parseYYYYMMDDOptional(val)
+			if err != nil {
+				return Document{}, errors.New("due_date must be YYYY-MM-DD or empty")
+			}
+			doc.DueDate = t
 		}
 	}
 

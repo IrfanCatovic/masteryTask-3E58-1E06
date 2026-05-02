@@ -89,5 +89,6 @@ func newMissingFieldIssue(fieldName, message string) ValidationIssue {
 }
 
 func moneyEquals(a, b float64) bool {
-	return math.Abs(a-b) <= DefaultMoneyEpsilon
+	return math.Abs(a-b) <= DefaultMoneyEpsilon //ovo je ustvari epsilon za float64, ako je razlika manja od epsilon, smatra se da su jednaki
+	//a epsilon je 0.01, ako je razlika manja od 0.01, smatra se da su jednaki
 }
