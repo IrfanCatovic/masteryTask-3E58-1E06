@@ -2,8 +2,9 @@ package document
 
 import (
 	"net/http"
-	"strings"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -13,6 +14,8 @@ type createDocumentRequest struct {
 	DocumentType   string `json:"document_type"`
 	SupplierName   string `json:"supplier_name"`
 	DocumentNumber string `json:"document_number"`
+	IssueDate      string `json:"issue_date"`
+	DueDate        string `json:"due_date"`
 	Status         string `json:"status"`
 	LineItems      []createLineItemRequest `json:"line_items"`
 }
@@ -53,6 +56,8 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 		req.DocumentType = strings.TrimSpace(req.DocumentType)
 		req.SupplierName = strings.TrimSpace(req.SupplierName)
 		req.DocumentNumber = strings.TrimSpace(req.DocumentNumber)
+		req.IssueDate = strings.TrimSpace(req.IssueDate)
+		req.DueDate = strings.TrimSpace(req.DueDate)
 		req.Status = strings.TrimSpace(req.Status)
 		for i := range req.LineItems {
 			req.LineItems[i].Description = strings.TrimSpace(req.LineItems[i].Description)
@@ -70,10 +75,31 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			return
 		}
 
+		issueDate, err := parseYYYYMMDDOptional(req.IssueDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": "issue_date must be empty or YYYY-MM-DD",
+				"error":   err.Error(),
+			})
+			return
+		}
+		dueDate, err := parseYYYYMMDDOptional(req.DueDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": "due_date must be empty or YYYY-MM-DD",
+				"error":   err.Error(),
+			})
+			return
+		}
+
 		doc := Document{
 			DocumentType:   req.DocumentType,
 			SupplierName:   req.SupplierName,
 			DocumentNumber: req.DocumentNumber,
+			IssueDate:      issueDate,
+			DueDate:        dueDate,
 			Status:         req.Status,
 		}
 		
@@ -302,6 +328,18 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			"document": doc,
 		})
 	})
+}
+
+// parseYYYYMMDDOptional accepts empty string or a calendar date "2006-01-02".
+func parseYYYYMMDDOptional(s string) (*time.Time, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	t, err := time.Parse("2006-01-02", strings.TrimSpace(s))
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
 
 // issuesForDuplicateDocumentNumber returns a DUPLICATE_DOCUMENT_NUMBER issue when that number already exists.

@@ -9,6 +9,8 @@ type Document struct {
 	SupplierName   string    `gorm:"size:255;not null" json:"supplier_name"`
 	DocumentNumber string    `gorm:"size:100;not null;index" json:"document_number"`
 	Status         string    `gorm:"size:30;not null;default:uploaded" json:"status"`
+	IssueDate      *time.Time `gorm:"type:date" json:"issue_date,omitempty"`
+	DueDate        *time.Time `gorm:"type:date" json:"due_date,omitempty"`
 	Currency       string    `gorm:"size:10" json:"currency,omitempty"`
 	Subtotal       float64   `gorm:"type:numeric(12,2);default:0" json:"subtotal"`
 	TaxRate        float64   `gorm:"type:numeric(8,4);default:0" json:"tax_rate"`
