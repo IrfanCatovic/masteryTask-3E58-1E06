@@ -1,5 +1,4 @@
 import { Route, Routes } from 'react-router-dom'
-import { ApiHealthBadge } from './components/ApiHealthBadge'
 import { DocumentDetailPage } from './pages/DocumentDetailPage'
 import { DocumentsPage } from './pages/DocumentsPage'
 
@@ -17,7 +16,6 @@ function App() {
               <p className="hidden text-xs text-slate-500 sm:block">Document processing system</p>
             </div>
           </div>
-          <ApiHealthBadge />
         </div>
       </header>
 

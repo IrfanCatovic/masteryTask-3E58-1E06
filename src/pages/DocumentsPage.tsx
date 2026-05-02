@@ -23,6 +23,7 @@ export function DocumentsPage() {
   const [filter, setFilter] = useState<string | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [duplicateModalOpen, setDuplicateModalOpen] = useState(false)
 
   const loadDocuments = useCallback(async () => {
     setLoading(true)
@@ -86,7 +87,41 @@ export function DocumentsPage() {
           void loadDocuments()
           navigate(`/documents/${document.id}`)
         }}
+        onDuplicate={() => setDuplicateModalOpen(true)}
       />
+
+      {duplicateModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+          role="presentation"
+          onClick={() => setDuplicateModalOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="duplicate-modal-title"
+            className="max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl shadow-slate-900/20"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="duplicate-modal-title" className="text-lg font-semibold text-slate-950">
+              Dokument već postoji
+            </h3>
+            <p className="mt-3 text-sm leading-relaxed text-slate-600">
+              Već smo uneli dokument sa tim brojem. Novi unos nije sačuvan ostaje samo postojeći
+              zapis.
+            </p>
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setDuplicateModalOpen(false)}
+                className="rounded-xl bg-slate-950 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
+              >
+                U redu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="rounded-3xl border border-white/70 bg-white/90 p-4 shadow-xl shadow-slate-200/60 backdrop-blur sm:p-6">
         <div className="flex flex-col gap-4 border-b border-slate-100 pb-5 lg:flex-row lg:items-end lg:justify-between">

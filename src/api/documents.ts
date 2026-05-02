@@ -83,6 +83,15 @@ export type UploadDocumentResult = {
   issues_count: number
 }
 
+/** Thrown when the API returns 409 — document number already in the database. */
+export class DuplicateDocumentError extends Error {
+  readonly code = 'DUPLICATE_DOCUMENT_NUMBER' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'DuplicateDocumentError'
+  }
+}
+
 export async function uploadDocument(file: File): Promise<UploadDocumentResult> {
   const form = new FormData()
   form.append('file', file)
@@ -90,6 +99,10 @@ export async function uploadDocument(file: File): Promise<UploadDocumentResult> 
     method: 'POST',
     body: form,
   })
+  if (res.status === 409) {
+    await res.text().catch(() => undefined)
+    throw new DuplicateDocumentError('Dokument sa tim brojem je već unet.')
+  }
   if (!res.ok) {
     throw new Error(await readApiError(res))
   }

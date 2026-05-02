@@ -1,12 +1,14 @@
 import { useState, type FormEvent } from 'react'
-import { uploadDocument } from '../api/documents'
+import { DuplicateDocumentError, uploadDocument } from '../api/documents'
 import type { Document } from '../types/document'
 
 type Props = {
   onSuccess: (document: Document) => void
+  /** Called when upload is rejected because document_number already exists (no row inserted). */
+  onDuplicate?: () => void
 }
 
-export function UploadForm({ onSuccess }: Props) {
+export function UploadForm({ onSuccess, onDuplicate }: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
@@ -34,6 +36,10 @@ export function UploadForm({ onSuccess }: Props) {
       onSuccess(result.document)
       input.value = ''
     } catch (err: unknown) {
+      if (err instanceof DuplicateDocumentError) {
+        onDuplicate?.()
+        return
+      }
       setError(err instanceof Error ? err.message : 'Upload failed')
     } finally {
       setBusy(false)
