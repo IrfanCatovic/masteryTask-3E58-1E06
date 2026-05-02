@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom'
 import type { Document } from '../types/document'
 
 const statusClasses: Record<string, string> = {
@@ -44,6 +45,8 @@ type Props = {
 }
 
 export function DocumentTable({ documents }: Props) {
+  const navigate = useNavigate()
+
   if (documents.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center shadow-sm">
@@ -71,7 +74,19 @@ export function DocumentTable({ documents }: Props) {
           </thead>
           <tbody className="divide-y divide-slate-100">
             {documents.map((doc) => (
-              <tr key={doc.id} className="transition hover:bg-slate-50">
+              <tr
+                key={doc.id}
+                className="cursor-pointer transition hover:bg-slate-50"
+                onClick={() => navigate(`/documents/${doc.id}`)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    navigate(`/documents/${doc.id}`)
+                  }
+                }}
+                tabIndex={0}
+                role="link"
+              >
                 <td className="px-5 py-4">
                   <div className="font-semibold text-slate-950">{doc.document_number}</div>
                   <div className="mt-0.5 text-xs text-slate-500">
@@ -101,7 +116,16 @@ export function DocumentTable({ documents }: Props) {
         {documents.map((doc) => (
           <article
             key={doc.id}
-            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+            className="cursor-pointer rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300 hover:shadow-md"
+            onClick={() => navigate(`/documents/${doc.id}`)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                navigate(`/documents/${doc.id}`)
+              }
+            }}
+            tabIndex={0}
+            role="link"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">

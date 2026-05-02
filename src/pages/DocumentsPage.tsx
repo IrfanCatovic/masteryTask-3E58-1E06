@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { fetchDocuments } from '../api/documents'
 import { DocumentTable } from '../components/DocumentTable'
+import { UploadForm } from '../components/UploadForm'
 import type { Document } from '../types/document'
 
 const FILTERS: { label: string; value: string | undefined }[] = [
@@ -16,34 +18,29 @@ function totalValue(documents: Document[]): number {
 }
 
 export function DocumentsPage() {
+  const navigate = useNavigate()
   const [documents, setDocuments] = useState<Document[]>([])
   const [filter, setFilter] = useState<string | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
+  const loadDocuments = useCallback(async () => {
     setLoading(true)
     setError(null)
-
-    fetchDocuments(filter)
-      .then((rows) => {
-        if (!cancelled) setDocuments(rows)
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : 'Failed to load documents')
-          setDocuments([])
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
+    try {
+      const rows = await fetchDocuments(filter)
+      setDocuments(rows)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Failed to load documents')
+      setDocuments([])
+    } finally {
+      setLoading(false)
     }
   }, [filter])
+
+  useEffect(() => {
+    void loadDocuments()
+  }, [loadDocuments])
 
   const stats = useMemo(() => {
     const needsReview = documents.filter((d) => d.status === 'needs_review').length
@@ -83,6 +80,13 @@ export function DocumentsPage() {
           <p className="mt-1 text-sm text-slate-500">{stats.validated} validated documents</p>
         </div>
       </div>
+
+      <UploadForm
+        onSuccess={(document) => {
+          void loadDocuments()
+          navigate(`/documents/${document.id}`)
+        }}
+      />
 
       <div className="rounded-3xl border border-white/70 bg-white/90 p-4 shadow-xl shadow-slate-200/60 backdrop-blur sm:p-6">
         <div className="flex flex-col gap-4 border-b border-slate-100 pb-5 lg:flex-row lg:items-end lg:justify-between">

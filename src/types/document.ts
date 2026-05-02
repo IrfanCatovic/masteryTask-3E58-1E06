@@ -1,5 +1,3 @@
-//ovde su tipovi za dokumente
-
 export type LineItem = {
   id: number
   document_id: number

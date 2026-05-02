@@ -1,4 +1,6 @@
+import { Route, Routes } from 'react-router-dom'
 import { ApiHealthBadge } from './components/ApiHealthBadge'
+import { DocumentDetailPage } from './pages/DocumentDetailPage'
 import { DocumentsPage } from './pages/DocumentsPage'
 
 function App() {
@@ -49,7 +51,10 @@ function App() {
           </div>
         </section>
 
-        <DocumentsPage />
+        <Routes>
+          <Route path="/" element={<DocumentsPage />} />
+          <Route path="/documents/:id" element={<DocumentDetailPage />} />
+        </Routes>
       </main>
     </div>
   )
