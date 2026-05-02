@@ -318,9 +318,9 @@ func parseTXTDocument(r io.Reader) (Document, error) {
 	return doc, nil
 }
 
-func getOptional(headers map[string]int, row []string, name string) string {
-	idx, ok := headers[name]
-	if !ok || idx < 0 || idx >= len(row) {
+func getOptional(headers map[string]int, row []string, name string) string {//ovde proveravamo da li imamo kolonu u headers mapi
+	idx, ok := headers[name]//idx je index kolone, ok je bool koji označava da li smo našli kolonu
+	if !ok || idx < 0 || idx >= len(row) {//ako ne nađemo kolonu ili je index negativan ili veći od dužine reda, vraćamo prazan string
 		return ""
 	}
 	return strings.TrimSpace(row[idx])
