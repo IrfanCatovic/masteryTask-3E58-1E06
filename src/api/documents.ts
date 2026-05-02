@@ -108,7 +108,7 @@ export async function uploadDocument(file: File): Promise<UploadDocumentResult> 
   })
   if (res.status === 409) {
     await res.text().catch(() => undefined)
-    throw new DuplicateDocumentError('Dokument sa tim brojem je već unet.')
+    throw new DuplicateDocumentError('A document with this number already exists.')
   }
   if (!res.ok) {
     throw new Error(await readApiError(res))

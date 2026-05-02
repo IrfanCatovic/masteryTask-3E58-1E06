@@ -1,6 +1,6 @@
 import { Route, Routes } from 'react-router-dom'
-import { DocumentDetailPage } from './pages/DocumentDetailPage'
-import { DocumentsPage } from './pages/DocumentsPage'
+import { DocumentDetailPage } from './pages/DocumentDetailPage.tsx'
+import { DocumentsPage } from './pages/DocumentsPage.tsx'
 
 function App() {
   return (

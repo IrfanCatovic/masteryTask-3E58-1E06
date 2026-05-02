@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { deleteDocument } from '../api/documents'
+import { AlertDialog, ConfirmDialog } from './DialogOverlays'
 import type { Document } from '../types/document'
 
 const statusClasses: Record<string, string> = {
@@ -51,6 +52,23 @@ type Props = {
 export function DocumentTable({ documents, onDocumentDeleted }: Props) {
   const navigate = useNavigate()
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [confirmDoc, setConfirmDoc] = useState<Document | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  async function performDelete(doc: Document) {
+    setBusyId(doc.id)
+    setDeleteError(null)
+    try {
+      await deleteDocument(doc.id)
+      setConfirmDoc(null)
+      onDocumentDeleted?.()
+    } catch (e: unknown) {
+      setConfirmDoc(null)
+      setDeleteError(e instanceof Error ? e.message : 'Could not delete document')
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   if (documents.length === 0) {
     return (
@@ -76,7 +94,7 @@ export function DocumentTable({ documents, onDocumentDeleted }: Props) {
               <th className="px-5 py-3 font-semibold">Issue date</th>
               <th className="px-5 py-3 font-semibold">Updated</th>
               <th className="w-24 px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Akcija
+                Action
               </th>
             </tr>
           </thead>
@@ -121,25 +139,11 @@ export function DocumentTable({ documents, onDocumentDeleted }: Props) {
                     disabled={busyId !== null}
                     onClick={(e) => {
                       e.stopPropagation()
-                      if (
-                        !window.confirm(
-                          `Obrisati dokument ${doc.document_number || '#' + doc.id}?`,
-                        )
-                      ) {
-                        return
-                      }
-                      setBusyId(doc.id)
-                      void deleteDocument(doc.id)
-                        .then(() => onDocumentDeleted?.())
-                        .catch((err: unknown) =>
-                          window.alert(
-                            err instanceof Error ? err.message : 'Brisanje nije uspelo',
-                          ),
-                        )
-                        .finally(() => setBusyId(null))
+                      setDeleteError(null)
+                      setConfirmDoc(doc)
                     }}
                   >
-                    {busyId === doc.id ? '…' : 'Obriši'}
+                    Delete
                   </button>
                 </td>
               </tr>
@@ -209,28 +213,47 @@ export function DocumentTable({ documents, onDocumentDeleted }: Props) {
                 disabled={busyId !== null}
                 onClick={(e) => {
                   e.stopPropagation()
-                  if (
-                    !window.confirm(
-                      `Obrisati dokument ${doc.document_number || '#' + doc.id}?`,
-                    )
-                  ) {
-                    return
-                  }
-                  setBusyId(doc.id)
-                  void deleteDocument(doc.id)
-                    .then(() => onDocumentDeleted?.())
-                    .catch((err: unknown) =>
-                      window.alert(err instanceof Error ? err.message : 'Brisanje nije uspelo'),
-                    )
-                    .finally(() => setBusyId(null))
+                  setDeleteError(null)
+                  setConfirmDoc(doc)
                 }}
               >
-                {busyId === doc.id ? 'Brisanje…' : 'Obriši'}
+                Delete
               </button>
             </div>
           </article>
         ))}
       </div>
+
+      <ConfirmDialog
+        open={confirmDoc !== null}
+        onClose={() => busyId === null && setConfirmDoc(null)}
+        onConfirm={() => confirmDoc && void performDelete(confirmDoc)}
+        title="Delete this document?"
+        description={
+          confirmDoc ? (
+            <>
+              Permanently remove{' '}
+              <span className="font-semibold text-slate-950">
+                {confirmDoc.document_number || `#${confirmDoc.id}`}
+              </span>
+              , including line items and validation issues. This cannot be undone.
+            </>
+          ) : (
+            ''
+          )
+        }
+        cancelLabel="Cancel"
+        confirmLabel="Delete"
+        danger
+        loading={busyId !== null}
+      />
+
+      <AlertDialog
+        open={deleteError !== null}
+        title="Could not delete"
+        message={deleteError ?? ''}
+        onClose={() => setDeleteError(null)}
+      />
     </>
   )
 }

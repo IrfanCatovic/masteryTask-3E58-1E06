@@ -7,6 +7,7 @@ import {
   updateDocument,
   type UpdateDocumentPayload,
 } from '../api/documents'
+import { ConfirmDialog } from '../components/DialogOverlays'
 import {
   DOCUMENT_STATUSES,
   type Document,
@@ -106,6 +107,7 @@ export function DocumentDetailPage() {
   const [docError, setDocError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
 
   const id = idParam ? Number.parseInt(idParam, 10) : NaN
 
@@ -183,20 +185,15 @@ export function DocumentDetailPage() {
 
   async function handleDeleteDocument() {
     if (Number.isNaN(id)) return
-    if (
-      !window.confirm(
-        'Da li ste sigurni da želite da obrišete ovaj dokument? Ovo je trajno i brišu se i stavke i validation issue-i.',
-      )
-    ) {
-      return
-    }
     setDeleteError(null)
     setDeleting(true)
     try {
       await deleteDocument(id)
+      setDeleteConfirmOpen(false)
       navigate('/')
     } catch (e: unknown) {
-      setDeleteError(e instanceof Error ? e.message : 'Brisanje nije uspelo')
+      setDeleteConfirmOpen(false)
+      setDeleteError(e instanceof Error ? e.message : 'Could not delete document')
     } finally {
       setDeleting(false)
     }
@@ -533,10 +530,13 @@ export function DocumentDetailPage() {
         <button
           type="button"
           disabled={deleting}
-          onClick={() => void handleDeleteDocument()}
+          onClick={() => {
+            setDeleteError(null)
+            setDeleteConfirmOpen(true)
+          }}
           className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 shadow-sm hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {deleting ? 'Brisanje…' : 'Obriši dokument'}
+          Delete document
         </button>
         <button
           type="button"
@@ -546,6 +546,23 @@ export function DocumentDetailPage() {
           Close
         </button>
       </div>
+
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        onClose={() => !deleting && setDeleteConfirmOpen(false)}
+        onConfirm={() => void handleDeleteDocument()}
+        title="Delete this document?"
+        description={
+          <>
+            This permanently removes the document, all line items, and validation issues. This
+            action cannot be undone.
+          </>
+        }
+        cancelLabel="Cancel"
+        confirmLabel="Delete"
+        danger
+        loading={deleting}
+      />
     </div>
   )
 }
