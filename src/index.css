@@ -1,7 +1,17 @@
 @import 'tailwindcss';
 
 @layer base {
+  :root {
+    color-scheme: light;
+  }
+
   body {
-    @apply min-h-dvh antialiased;
+    @apply min-h-dvh bg-slate-950 text-slate-950 antialiased;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
   }
 }

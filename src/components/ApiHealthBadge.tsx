@@ -1,15 +1,11 @@
 import { useEffect, useState } from 'react'
 import { apiUrl } from '../api/client'
 
-
 type HealthState =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'ok'; body: unknown }
   | { kind: 'error'; message: string }
-
-const shell =
-  'rounded-lg border px-4 py-3 text-sm leading-relaxed'
 
 export function ApiHealthBadge() {
   const [state, setState] = useState<HealthState>({ kind: 'idle' })
@@ -17,6 +13,7 @@ export function ApiHealthBadge() {
   useEffect(() => {
     const ctrl = new AbortController()
     setState({ kind: 'loading' })
+
     fetch(apiUrl('/health'), { signal: ctrl.signal })
       .then(async (res) => {
         if (!res.ok) {
@@ -34,13 +31,15 @@ export function ApiHealthBadge() {
           e instanceof Error ? e.message : 'Failed to reach backend (is it running on :8080?)'
         setState({ kind: 'error', message })
       })
+
     return () => ctrl.abort()
   }, [])
 
   if (state.kind === 'loading' || state.kind === 'idle') {
     return (
-      <div className={`${shell} border-neutral-200 bg-neutral-50 text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900/40 dark:text-neutral-400`} role="status">
-        Provera API-ja…
+      <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/80 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm">
+        <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+        Checking API
       </div>
     )
   }
@@ -48,23 +47,24 @@ export function ApiHealthBadge() {
   if (state.kind === 'error') {
     return (
       <div
-        className={`${shell} border-red-200 bg-red-50 text-red-900 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200`}
+        className="inline-flex max-w-full items-center gap-2 rounded-full border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 shadow-sm"
         role="alert"
+        title={state.message}
       >
-        <strong className="font-semibold">API nije dostupan.</strong> {state.message}
+        <span className="h-2 w-2 rounded-full bg-red-500" />
+        API offline
       </div>
     )
   }
 
   return (
     <div
-      className={`${shell} border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/50 dark:bg-emerald-950/40 dark:text-emerald-100`}
+      className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 shadow-sm"
       role="status"
+      title={JSON.stringify(state.body)}
     >
-      <strong className="font-semibold">API živ.</strong>{' '}
-      <code className="ml-1 break-all font-mono text-xs opacity-90">
-        {JSON.stringify(state.body)}
-      </code>
+      <span className="h-2 w-2 rounded-full bg-emerald-500" />
+      API connected
     </div>
   )
 }

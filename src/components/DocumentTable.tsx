@@ -1,16 +1,42 @@
 import type { Document } from '../types/document'
 
+const statusClasses: Record<string, string> = {
+  uploaded: 'bg-sky-50 text-sky-700 ring-sky-200',
+  needs_review: 'bg-amber-50 text-amber-800 ring-amber-200',
+  validated: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  rejected: 'bg-red-50 text-red-700 ring-red-200',
+}
+
 function formatMoney(n: number | undefined, currency?: string): string {
   if (n === undefined || Number.isNaN(n)) return '—'
   const cur = currency?.trim() ? ` ${currency}` : ''
-  return `${n.toFixed(2)}${cur}`
+  return `${n.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}${cur}`
 }
 
 function formatDate(iso: string | null | undefined): string {
   if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleDateString()
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  })
+}
+
+function StatusPill({ status }: { status: string }) {
+  return (
+    <span
+      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${
+        statusClasses[status] ?? 'bg-slate-100 text-slate-700 ring-slate-200'
+      }`}
+    >
+      {status.replace('_', ' ')}
+    </span>
+  )
 }
 
 type Props = {
@@ -20,52 +46,104 @@ type Props = {
 export function DocumentTable({ documents }: Props) {
   if (documents.length === 0) {
     return (
-      <p className="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-8 text-center text-sm text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900/30 dark:text-neutral-400">
-        Nema dokumenata za prikaz.
-      </p>
+      <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center shadow-sm">
+        <p className="text-sm font-semibold text-slate-900">No documents found</p>
+        <p className="mt-1 text-sm text-slate-500">
+          Upload a CSV/TXT file or create a document from the API to populate this dashboard.
+        </p>
+      </div>
     )
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-700">
-      <table className="w-full min-w-[640px] text-left text-sm">
-        <thead className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900/50">
-          <tr>
-            <th className="px-3 py-2 font-medium text-neutral-700 dark:text-neutral-300">ID</th>
-            <th className="px-3 py-2 font-medium text-neutral-700 dark:text-neutral-300">Broj</th>
-            <th className="px-3 py-2 font-medium text-neutral-700 dark:text-neutral-300">Tip</th>
-            <th className="px-3 py-2 font-medium text-neutral-700 dark:text-neutral-300">Dobavljač</th>
-            <th className="px-3 py-2 font-medium text-neutral-700 dark:text-neutral-300">Status</th>
-            <th className="px-3 py-2 font-medium text-neutral-700 dark:text-neutral-300">Total</th>
-            <th className="px-3 py-2 font-medium text-neutral-700 dark:text-neutral-300">Issue</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
-          {documents.map((d) => (
-            <tr key={d.id} className="bg-white hover:bg-neutral-50 dark:bg-neutral-950 dark:hover:bg-neutral-900/80">
-              <td className="whitespace-nowrap px-3 py-2 font-mono text-neutral-600 dark:text-neutral-400">
-                {d.id}
-              </td>
-              <td className="px-3 py-2 text-neutral-900 dark:text-neutral-100">{d.document_number}</td>
-              <td className="px-3 py-2 text-neutral-700 dark:text-neutral-300">{d.document_type}</td>
-              <td className="max-w-[180px] truncate px-3 py-2 text-neutral-700 dark:text-neutral-300" title={d.supplier_name}>
-                {d.supplier_name}
-              </td>
-              <td className="whitespace-nowrap px-3 py-2">
-                <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs font-medium text-neutral-800 dark:bg-neutral-800 dark:text-neutral-200">
-                  {d.status}
-                </span>
-              </td>
-              <td className="whitespace-nowrap px-3 py-2 tabular-nums text-neutral-800 dark:text-neutral-200">
-                {formatMoney(d.total, d.currency)}
-              </td>
-              <td className="whitespace-nowrap px-3 py-2 text-neutral-600 dark:text-neutral-400">
-                {formatDate(d.issue_date)}
-              </td>
+    <>
+      <div className="hidden overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm lg:block">
+        <table className="w-full text-left text-sm">
+          <thead className="border-b border-slate-200 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-5 py-3 font-semibold">Document</th>
+              <th className="px-5 py-3 font-semibold">Supplier</th>
+              <th className="px-5 py-3 font-semibold">Status</th>
+              <th className="px-5 py-3 text-right font-semibold">Total</th>
+              <th className="px-5 py-3 font-semibold">Issue date</th>
+              <th className="px-5 py-3 font-semibold">Updated</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {documents.map((doc) => (
+              <tr key={doc.id} className="transition hover:bg-slate-50">
+                <td className="px-5 py-4">
+                  <div className="font-semibold text-slate-950">{doc.document_number}</div>
+                  <div className="mt-0.5 text-xs text-slate-500">
+                    #{doc.id} · {doc.document_type || 'unknown type'}
+                  </div>
+                </td>
+                <td className="max-w-[220px] px-5 py-4">
+                  <div className="truncate font-medium text-slate-800" title={doc.supplier_name}>
+                    {doc.supplier_name || '—'}
+                  </div>
+                </td>
+                <td className="px-5 py-4">
+                  <StatusPill status={doc.status} />
+                </td>
+                <td className="px-5 py-4 text-right font-semibold tabular-nums text-slate-900">
+                  {formatMoney(doc.total, doc.currency)}
+                </td>
+                <td className="px-5 py-4 text-slate-600">{formatDate(doc.issue_date)}</td>
+                <td className="px-5 py-4 text-slate-500">{formatDate(doc.updated_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="grid gap-3 lg:hidden">
+        {documents.map((doc) => (
+          <article
+            key={doc.id}
+            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-slate-950">
+                  {doc.document_number}
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  #{doc.id} · {doc.document_type || 'unknown type'}
+                </p>
+              </div>
+              <StatusPill status={doc.status} />
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                  Supplier
+                </p>
+                <p className="mt-1 truncate font-medium text-slate-800">
+                  {doc.supplier_name || '—'}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Total</p>
+                <p className="mt-1 font-semibold tabular-nums text-slate-950">
+                  {formatMoney(doc.total, doc.currency)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Issue</p>
+                <p className="mt-1 text-slate-700">{formatDate(doc.issue_date)}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
+                  Updated
+                </p>
+                <p className="mt-1 text-slate-700">{formatDate(doc.updated_at)}</p>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
+    </>
   )
 }
