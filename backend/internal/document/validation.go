@@ -13,6 +13,7 @@ const (
 	IssueCodeInvalidTotal      = "INVALID_TOTAL"
 	IssueCodeMissingCurrency    = "MISSING_CURRENCY"
 	IssueCodeInvalidDateRange   = "INVALID_DATE_RANGE"
+	IssueCodeInvalidDate        = "INVALID_DATE"
 	IssueSeverityError          = "error"
 	DefaultMoneyEpsilon float64 = 0.01
 )
@@ -102,6 +103,19 @@ func newMissingFieldIssue(fieldName, message string) ValidationIssue {
 	return ValidationIssue{
 		Code:      IssueCodeMissingField,
 		Message:   message,
+		Severity:  IssueSeverityError,
+		FieldName: fieldName,
+		Resolved:  false,
+	}
+}
+
+// newInvalidDateIssue is used when a raw date value can't be parsed as YYYY-MM-DD
+// (or is otherwise malformed). The bad value is preserved in the message so a
+// reviewer can see what was originally uploaded and correct it.
+func newInvalidDateIssue(fieldName, rawValue string) ValidationIssue {
+	return ValidationIssue{
+		Code:      IssueCodeInvalidDate,
+		Message:   fieldName + " is not a valid date (expected YYYY-MM-DD), got: " + rawValue,
 		Severity:  IssueSeverityError,
 		FieldName: fieldName,
 		Resolved:  false,

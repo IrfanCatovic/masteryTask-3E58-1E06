@@ -9,6 +9,7 @@ type Props = {
 export function UploadForm({ onSuccess }: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [info, setInfo] = useState<string | null>(null)
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -20,8 +21,16 @@ export function UploadForm({ onSuccess }: Props) {
     }
     setBusy(true)
     setError(null)
+    setInfo(null)
     try {
       const result = await uploadDocument(file)
+      if (result.issues_count > 0) {
+        setInfo(
+          `Uploaded with ${result.issues_count} issue${result.issues_count === 1 ? '' : 's'} — open the document to review and correct.`,
+        )
+      } else {
+        setInfo('Uploaded successfully — no issues detected.')
+      }
       onSuccess(result.document)
       input.value = ''
     } catch (err: unknown) {
@@ -65,6 +74,9 @@ export function UploadForm({ onSuccess }: Props) {
         <p className="mt-3 text-sm font-medium text-red-700" role="alert">
           {error}
         </p>
+      )}
+      {info && !error && (
+        <p className="mt-3 text-sm font-medium text-emerald-700">{info}</p>
       )}
     </form>
   )

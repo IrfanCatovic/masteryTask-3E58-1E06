@@ -1,6 +1,19 @@
 import { apiUrl } from './client'
 import type { Document, DocumentsListResponse, DocumentStatus } from '../types/document'
 
+// Extracts a human-readable error from a failed JSON response so the UI shows
+// "csv missing required column: document_type" instead of the full JSON body.
+async function readApiError(res: Response): Promise<string> {
+  const text = await res.text()
+  if (!text) return `HTTP ${res.status} ${res.statusText}`
+  try {
+    const body = JSON.parse(text) as { error?: string; message?: string }
+    return body.error || body.message || text
+  } catch {
+    return text
+  }
+}
+
 export async function fetchDocuments(status?: string): Promise<Document[]> {
   const search = new URLSearchParams()
   if (status !== undefined && status !== '') {
@@ -10,8 +23,7 @@ export async function fetchDocuments(status?: string): Promise<Document[]> {
   const path = query ? `/documents?${query}` : '/documents'
   const res = await fetch(apiUrl(path))
   if (!res.ok) {
-    const text = await res.text()
-    throw new Error(text || `HTTP ${res.status} ${res.statusText}`)
+    throw new Error(await readApiError(res))
   }
   const data = (await res.json()) as DocumentsListResponse
   return data.documents ?? []
@@ -20,8 +32,7 @@ export async function fetchDocuments(status?: string): Promise<Document[]> {
 export async function fetchDocument(id: number): Promise<Document> {
   const res = await fetch(apiUrl(`/documents/${id}`))
   if (!res.ok) {
-    const text = await res.text()
-    throw new Error(text || `HTTP ${res.status} ${res.statusText}`)
+    throw new Error(await readApiError(res))
   }
   const data = (await res.json()) as { status: string; document: Document }
   return data.document
@@ -34,8 +45,34 @@ export async function patchDocumentStatus(id: number, status: DocumentStatus): P
     body: JSON.stringify({ status }),
   })
   if (!res.ok) {
-    const text = await res.text()
-    throw new Error(text || `HTTP ${res.status} ${res.statusText}`)
+    throw new Error(await readApiError(res))
+  }
+  const data = (await res.json()) as { document: Document }
+  return data.document
+}
+
+// Payload for manual corrections; only fields the user actually changed.
+export type UpdateDocumentPayload = Partial<{
+  document_type: string
+  supplier_name: string
+  document_number: string
+  issue_date: string
+  due_date: string
+  currency: string
+  subtotal: number
+  tax_rate: number
+  discount_rate: number
+  total: number
+}>
+
+export async function updateDocument(id: number, payload: UpdateDocumentPayload): Promise<Document> {
+  const res = await fetch(apiUrl(`/documents/${id}`), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error(await readApiError(res))
   }
   const data = (await res.json()) as { document: Document }
   return data.document
@@ -54,8 +91,7 @@ export async function uploadDocument(file: File): Promise<UploadDocumentResult> 
     body: form,
   })
   if (!res.ok) {
-    const text = await res.text()
-    throw new Error(text || `HTTP ${res.status} ${res.statusText}`)
+    throw new Error(await readApiError(res))
   }
   return (await res.json()) as UploadDocumentResult
 }

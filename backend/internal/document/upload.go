@@ -26,7 +26,7 @@ func registerUploadRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			return
 		}
 
-		doc, parseErr := parseUploadedDocument(fileHeader)
+		parsed, parseErr := parseUploadedDocument(fileHeader)
 		if parseErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"status":  "error",
@@ -35,8 +35,10 @@ func registerUploadRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			})
 			return
 		}
+		doc := parsed.Document
 
 		issues := ValidateDocument(doc)
+		issues = append(issues, parsed.ParseIssues...)
 		dupIssues, err := issuesForDuplicateDocumentNumber(gormDB, doc.DocumentNumber)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -120,10 +122,10 @@ func registerUploadRoutes(router *gin.Engine, gormDB *gorm.DB) {
 	})
 }
 
-func parseUploadedDocument(fileHeader *multipart.FileHeader) (Document, error) {
+func parseUploadedDocument(fileHeader *multipart.FileHeader) (parseResult, error) {
 	file, err := fileHeader.Open()
 	if err != nil {
-		return Document{}, err
+		return parseResult{}, err
 	}
 	defer file.Close()
 
@@ -134,85 +136,90 @@ func parseUploadedDocument(fileHeader *multipart.FileHeader) (Document, error) {
 	case ".txt":
 		return parseTXTDocument(file)
 	default:
-		return Document{}, errors.New("unsupported file type; use .csv or .txt")
+		return parseResult{}, errors.New("unsupported file type; use .csv or .txt")
 	}
 }
 
-func parseCSVDocument(r io.Reader) (Document, error) {
+// parseResult vraća parsirani dokument zajedno sa "soft" issue-ima
+// koje smo otkrili u toku parsiranja (npr. neparsabilan datum).
+// Tako podržavamo "imperfect data" iz README-a umesto da odbacujemo upload.
+type parseResult struct {
+	Document   Document
+	ParseIssues []ValidationIssue
+}
+
+func parseCSVDocument(r io.Reader) (parseResult, error) {
 	reader := csv.NewReader(r)
+	reader.FieldsPerRecord = -1
 	rows, err := reader.ReadAll()
 	if err != nil {
-		return Document{}, err
+		return parseResult{}, err
 	}
-	if len(rows) < 2 {
-		return Document{}, errors.New("csv must contain header and at least one data row")
+	if len(rows) < 1 {
+		return parseResult{}, errors.New("csv is empty")
 	}
 
 	headers := make(map[string]int)
 	for i, h := range rows[0] {
-		headers[strings.ToLower(strings.TrimSpace(h))] = i //ovde pretvaramo header u lowercase i brisemo razmake
-		//headers je map[string]int, gde key je header a value je index
-		//i je index kolone, h je header string
+		headers[strings.ToLower(strings.TrimSpace(h))] = i
 	}
 
-	required := []string{"document_type", "supplier_name", "document_number"}
-	for _, key := range required {//ovde proveravamo da li imamo sve obavezne kolone
-		if _, ok := headers[key]; !ok {
-			return Document{}, errors.New("csv missing required column: " + key)//ako ne nađemo kolonu, vraćamo error
-		}
+	var first []string
+	if len(rows) >= 2 {
+		first = rows[1]
 	}
 
-	first := rows[1] //prva vrsta je headeri, pa prva vrsta je prva kolona
-	get := func(name string) string {//ovo get je funkcija koja prima ime kolone i vraća vrednost kolone
-		//ovde npr primim "document_type", pa tražim index kolone "document_type" u headers mapi i to je 0
-		idx, ok := headers[name]//ovde tražimo index kolone u headers mapi
-		//idx je index kolone, ok je bool koji označava da li smo našli kolonu
-		if !ok || idx >= len(first) {
-			return ""//ako ne nađemo kolonu ili je index veći od dužine prve vrste, vraćamo prazan string
+	get := func(name string) string {
+		idx, ok := headers[name]
+		if !ok || idx < 0 || idx >= len(first) {
+			return ""
 		}
-		return strings.TrimSpace(first[idx])//ovde vraćamo vrednost kolone
+		return strings.TrimSpace(first[idx])
 	}
 
 	doc := Document{
 		DocumentType:   get("document_type"),
 		SupplierName:   get("supplier_name"),
 		DocumentNumber: get("document_number"),
-		Status:         strings.TrimSpace(get("status")),
-		Currency:       strings.TrimSpace(getOptional(headers, first, "currency")),
-		Subtotal:       parseFloat(getOptional(headers, first, "subtotal")),
-		TaxRate:        parseFloat(getOptional(headers, first, "tax_rate")),
-		DiscountRate:   parseFloat(getOptional(headers, first, "discount_rate")),
-		Total:          parseFloat(getOptional(headers, first, "total")),
+		Status:         get("status"),
+		Currency:       strings.ToUpper(get("currency")),
+		Subtotal:       parseFloat(get("subtotal")),
+		TaxRate:        parseFloat(get("tax_rate")),
+		DiscountRate:   parseFloat(get("discount_rate")),
+		Total:          parseFloat(get("total")),
 	}
 	if doc.Status == "" {
 		doc.Status = "uploaded"
 	}
 
-	if s := getOptional(headers, first, "issue_date"); s != "" {
+	parseIssues := make([]ValidationIssue, 0)
+
+	if s := get("issue_date"); s != "" {
 		t, err := parseYYYYMMDDOptional(s)
 		if err != nil {
-			return Document{}, errors.New("issue_date must be YYYY-MM-DD or empty")
+			parseIssues = append(parseIssues, newInvalidDateIssue("issue_date", s))
+		} else {
+			doc.IssueDate = t
 		}
-		doc.IssueDate = t
 	}
-	if s := getOptional(headers, first, "due_date"); s != "" {
+	if s := get("due_date"); s != "" {
 		t, err := parseYYYYMMDDOptional(s)
 		if err != nil {
-			return Document{}, errors.New("due_date must be YYYY-MM-DD or empty")
+			parseIssues = append(parseIssues, newInvalidDateIssue("due_date", s))
+		} else {
+			doc.DueDate = t
 		}
-		doc.DueDate = t
 	}
 
 	// Optional line-item columns from each row.
-	//ovde proveravamo da li imamo kolone description, quantity, unit_price, line_total
 	_, hasDesc := headers["description"]
 	_, hasQty := headers["quantity"]
 	_, hasUnit := headers["unit_price"]
 	_, hasTotal := headers["line_total"]
-	if hasDesc && hasQty && hasUnit && hasTotal {//ako imamo sve kolone, prolazimo kroz sve vrste
-		for _, row := range rows[1:] { //radimo for loop kroz sve vrste osim prve vrste (headeri)
-			item := LineItem{ 
-				Description: readRowValue(row, headers["description"]),//ovde vraćamo vrednost kolone description
+	if hasDesc && hasQty && hasUnit && hasTotal && len(rows) >= 2 {
+		for _, row := range rows[1:] {
+			item := LineItem{
+				Description: readRowValue(row, headers["description"]),
 				Quantity:    parseFloat(readRowValue(row, headers["quantity"])),
 				UnitPrice:   parseFloat(readRowValue(row, headers["unit_price"])),
 				LineTotal:   parseFloat(readRowValue(row, headers["line_total"])),
@@ -223,16 +230,17 @@ func parseCSVDocument(r io.Reader) (Document, error) {
 		}
 	}
 
-	return doc, nil
+	return parseResult{Document: doc, ParseIssues: parseIssues}, nil
 }
 
-func parseTXTDocument(r io.Reader) (Document, error) {
+func parseTXTDocument(r io.Reader) (parseResult, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
-		return Document{}, err
+		return parseResult{}, err
 	}
 
 	doc := Document{Status: "uploaded"}
+	parseIssues := make([]ValidationIssue, 0)
 	lines := make([]string, 0)
 	for _, raw := range strings.Split(string(b), "\n") {
 		line := strings.TrimSpace(raw)
@@ -297,33 +305,27 @@ func parseTXTDocument(r io.Reader) (Document, error) {
 		case "total":
 			doc.Total = parseFloat(val)
 		case "issue_date":
-			t, err := parseYYYYMMDDOptional(val)
-			if err != nil {
-				return Document{}, errors.New("issue_date must be YYYY-MM-DD or empty")
+			if val != "" {
+				t, err := parseYYYYMMDDOptional(val)
+				if err != nil {
+					parseIssues = append(parseIssues, newInvalidDateIssue("issue_date", val))
+				} else {
+					doc.IssueDate = t
+				}
 			}
-			doc.IssueDate = t
 		case "due_date":
-			t, err := parseYYYYMMDDOptional(val)
-			if err != nil {
-				return Document{}, errors.New("due_date must be YYYY-MM-DD or empty")
+			if val != "" {
+				t, err := parseYYYYMMDDOptional(val)
+				if err != nil {
+					parseIssues = append(parseIssues, newInvalidDateIssue("due_date", val))
+				} else {
+					doc.DueDate = t
+				}
 			}
-			doc.DueDate = t
 		}
 	}
 
-	if doc.DocumentType == "" && doc.DocumentNumber == "" {
-		return Document{}, errors.New("txt must include at least invoice type and document number")
-	}
-
-	return doc, nil
-}
-
-func getOptional(headers map[string]int, row []string, name string) string {//ovde proveravamo da li imamo kolonu u headers mapi
-	idx, ok := headers[name]//idx je index kolone, ok je bool koji označava da li smo našli kolonu
-	if !ok || idx < 0 || idx >= len(row) {//ako ne nađemo kolonu ili je index negativan ili veći od dužine reda, vraćamo prazan string
-		return ""
-	}
-	return strings.TrimSpace(row[idx])
+	return parseResult{Document: doc, ParseIssues: parseIssues}, nil
 }
 
 func readRowValue(row []string, idx int) string {//dobijamo vrednost kolone iz reda

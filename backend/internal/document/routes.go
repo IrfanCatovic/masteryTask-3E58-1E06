@@ -31,6 +31,21 @@ type updateStatusRequest struct {
 	Status string `json:"status"`
 }
 
+// updateDocumentRequest carries optional fields for manual correction.
+// Pointer fields let us tell apart "field omitted" vs "field set to empty".
+type updateDocumentRequest struct {
+	DocumentType   *string  `json:"document_type"`
+	SupplierName   *string  `json:"supplier_name"`
+	DocumentNumber *string  `json:"document_number"`
+	IssueDate      *string  `json:"issue_date"`
+	DueDate        *string  `json:"due_date"`
+	Currency       *string  `json:"currency"`
+	Subtotal       *float64 `json:"subtotal"`
+	TaxRate        *float64 `json:"tax_rate"`
+	DiscountRate   *float64 `json:"discount_rate"`
+	Total          *float64 `json:"total"`
+}
+
 var allowedStatuses = map[string]struct{}{
 	"uploaded":     {},
 	"needs_review": {},
@@ -328,6 +343,188 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			"document": doc,
 		})
 	})
+
+	// Manual correction of extracted fields. Re-runs validation and
+	// rewrites the issue list so the review interface always reflects
+	// the latest state of the document.
+	router.PATCH("/documents/:id", func(c *gin.Context) {
+		idParam := c.Param("id")
+		id, err := strconv.ParseUint(idParam, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": "invalid document id",
+			})
+			return
+		}
+
+		var req updateDocumentRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": "invalid JSON payload",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		var doc Document
+		if err := gormDB.Preload("LineItems").First(&doc, uint(id)).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusNotFound, gin.H{
+					"status":  "error",
+					"message": "document not found",
+				})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to fetch document",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		// Track date issues that come from manual edits with bad input.
+		dateIssues := make([]ValidationIssue, 0)
+
+		if req.DocumentType != nil {
+			doc.DocumentType = strings.TrimSpace(*req.DocumentType)
+		}
+		if req.SupplierName != nil {
+			doc.SupplierName = strings.TrimSpace(*req.SupplierName)
+		}
+		if req.DocumentNumber != nil {
+			doc.DocumentNumber = strings.TrimSpace(*req.DocumentNumber)
+		}
+		if req.Currency != nil {
+			doc.Currency = strings.ToUpper(strings.TrimSpace(*req.Currency))
+		}
+		if req.Subtotal != nil {
+			doc.Subtotal = *req.Subtotal
+		}
+		if req.TaxRate != nil {
+			doc.TaxRate = *req.TaxRate
+		}
+		if req.DiscountRate != nil {
+			doc.DiscountRate = *req.DiscountRate
+		}
+		if req.Total != nil {
+			doc.Total = *req.Total
+		}
+		if req.IssueDate != nil {
+			val := strings.TrimSpace(*req.IssueDate)
+			if val == "" {
+				doc.IssueDate = nil
+			} else if t, err := parseYYYYMMDDOptional(val); err == nil {
+				doc.IssueDate = t
+			} else {
+				dateIssues = append(dateIssues, newInvalidDateIssue("issue_date", val))
+			}
+		}
+		if req.DueDate != nil {
+			val := strings.TrimSpace(*req.DueDate)
+			if val == "" {
+				doc.DueDate = nil
+			} else if t, err := parseYYYYMMDDOptional(val); err == nil {
+				doc.DueDate = t
+			} else {
+				dateIssues = append(dateIssues, newInvalidDateIssue("due_date", val))
+			}
+		}
+
+		// Recompute issues against the new state.
+		issues := ValidateDocument(doc)
+		issues = append(issues, dateIssues...)
+		dupIssues, err := issuesForDuplicateDocumentNumberExcluding(gormDB, doc.DocumentNumber, doc.ID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to check duplicate document number",
+				"error":   err.Error(),
+			})
+			return
+		}
+		issues = append(issues, dupIssues...)
+
+		// Auto-flag status when new issues appear; leave manual statuses
+		// (validated/rejected) untouched if user already triaged them.
+		if len(issues) > 0 && doc.Status != "rejected" {
+			doc.Status = "needs_review"
+		}
+
+		tx := gormDB.Begin()
+		if tx.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to start database transaction",
+				"error":   tx.Error.Error(),
+			})
+			return
+		}
+
+		if err := tx.Save(&doc).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to update document",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		if err := tx.Where("document_id = ?", doc.ID).Delete(&ValidationIssue{}).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to clear stale issues",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		if len(issues) > 0 {
+			for i := range issues {
+				issues[i].DocumentID = doc.ID
+			}
+			if err := tx.Create(&issues).Error; err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"status":  "error",
+					"message": "failed to save validation issues",
+					"error":   err.Error(),
+				})
+				return
+			}
+		}
+
+		if err := tx.Commit().Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to commit database transaction",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		// Reload with fresh associations for the response.
+		var fresh Document
+		if err := gormDB.Preload("LineItems").Preload("Issues").First(&fresh, doc.ID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to reload document",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":       "ok",
+			"message":      "document updated",
+			"document":     fresh,
+			"issues_count": len(fresh.Issues),
+		})
+	})
 }
 
 // parseYYYYMMDDOptional accepts empty string or a calendar date "2006-01-02".
@@ -344,13 +541,22 @@ func parseYYYYMMDDOptional(s string) (*time.Time, error) {
 
 // issuesForDuplicateDocumentNumber returns a DUPLICATE_DOCUMENT_NUMBER issue when that number already exists.
 func issuesForDuplicateDocumentNumber(db *gorm.DB, documentNumber string) ([]ValidationIssue, error) {
+	return issuesForDuplicateDocumentNumberExcluding(db, documentNumber, 0)
+}
+
+// issuesForDuplicateDocumentNumberExcluding behaves like issuesForDuplicateDocumentNumber
+// but ignores the document with id == excludeID, which is needed when revalidating
+// an existing record after a manual edit (so it doesn't flag itself as a duplicate).
+func issuesForDuplicateDocumentNumberExcluding(db *gorm.DB, documentNumber string, excludeID uint) ([]ValidationIssue, error) {
 	if strings.TrimSpace(documentNumber) == "" {
 		return nil, nil
 	}
 	var n int64
-	if err := db.Model(&Document{}).
-		Where("document_number = ?", documentNumber).
-		Count(&n).Error; err != nil {
+	q := db.Model(&Document{}).Where("document_number = ?", documentNumber)
+	if excludeID != 0 {
+		q = q.Where("id <> ?", excludeID)
+	}
+	if err := q.Count(&n).Error; err != nil {
 		return nil, err
 	}
 	if n == 0 {

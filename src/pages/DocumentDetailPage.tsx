@@ -1,6 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { fetchDocument, patchDocumentStatus } from '../api/documents'
+import {
+  fetchDocument,
+  patchDocumentStatus,
+  updateDocument,
+  type UpdateDocumentPayload,
+} from '../api/documents'
 import {
   DOCUMENT_STATUSES,
   type Document,
@@ -22,9 +27,66 @@ function formatDate(iso: string | null | undefined): string {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: '2-digit' })
 }
 
+// "2025-01-15T00:00:00Z" -> "2025-01-15" so the value works as <input type="date">.
+function toDateInput(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toISOString().slice(0, 10)
+}
+
 const severityStyle: Record<string, string> = {
   error: 'border-red-200 bg-red-50 text-red-900',
   warning: 'border-amber-200 bg-amber-50 text-amber-900',
+}
+
+type EditDraft = {
+  document_type: string
+  supplier_name: string
+  document_number: string
+  issue_date: string
+  due_date: string
+  currency: string
+  subtotal: string
+  tax_rate: string
+  discount_rate: string
+  total: string
+}
+
+function draftFromDocument(doc: Document): EditDraft {
+  return {
+    document_type: doc.document_type ?? '',
+    supplier_name: doc.supplier_name ?? '',
+    document_number: doc.document_number ?? '',
+    issue_date: toDateInput(doc.issue_date),
+    due_date: toDateInput(doc.due_date),
+    currency: doc.currency ?? '',
+    subtotal: doc.subtotal != null ? String(doc.subtotal) : '',
+    tax_rate: doc.tax_rate != null ? String(doc.tax_rate) : '',
+    discount_rate: doc.discount_rate != null ? String(doc.discount_rate) : '',
+    total: doc.total != null ? String(doc.total) : '',
+  }
+}
+
+// Convert the form draft into a PATCH payload, sending all editable fields so the
+// server has the full state on which to re-run validation.
+function buildPayload(draft: EditDraft): UpdateDocumentPayload {
+  const numberOrZero = (s: string) => {
+    const n = Number(s)
+    return Number.isFinite(n) ? n : 0
+  }
+  return {
+    document_type: draft.document_type.trim(),
+    supplier_name: draft.supplier_name.trim(),
+    document_number: draft.document_number.trim(),
+    issue_date: draft.issue_date,
+    due_date: draft.due_date,
+    currency: draft.currency.trim(),
+    subtotal: numberOrZero(draft.subtotal),
+    tax_rate: numberOrZero(draft.tax_rate),
+    discount_rate: numberOrZero(draft.discount_rate),
+    total: numberOrZero(draft.total),
+  }
 }
 
 export function DocumentDetailPage() {
@@ -36,6 +98,11 @@ export function DocumentDetailPage() {
   const [statusDraft, setStatusDraft] = useState<DocumentStatus>('uploaded')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState<EditDraft | null>(null)
+  const [savingDoc, setSavingDoc] = useState(false)
+  const [docError, setDocError] = useState<string | null>(null)
 
   const id = idParam ? Number.parseInt(idParam, 10) : NaN
 
@@ -72,6 +139,16 @@ export function DocumentDetailPage() {
     }
   }, [id])
 
+  // Map field_name -> issue messages so we can highlight problem fields in the UI.
+  const issuesByField = useMemo(() => {
+    const map: Record<string, ValidationIssue[]> = {}
+    for (const issue of doc?.issues ?? []) {
+      const key = issue.field_name || '_other'
+      ;(map[key] ??= []).push(issue)
+    }
+    return map
+  }, [doc])
+
   async function handleSaveStatus() {
     if (!doc || Number.isNaN(id)) return
     setSaving(true)
@@ -85,6 +162,36 @@ export function DocumentDetailPage() {
       setSaveError(e instanceof Error ? e.message : 'Failed to update status')
     } finally {
       setSaving(false)
+    }
+  }
+
+  function startEditing() {
+    if (!doc) return
+    setDraft(draftFromDocument(doc))
+    setDocError(null)
+    setEditing(true)
+  }
+
+  function cancelEditing() {
+    setEditing(false)
+    setDraft(null)
+    setDocError(null)
+  }
+
+  async function handleSaveDocument() {
+    if (!doc || !draft || Number.isNaN(id)) return
+    setSavingDoc(true)
+    setDocError(null)
+    try {
+      const updated = await updateDocument(id, buildPayload(draft))
+      setDoc(updated)
+      setStatusDraft(updated.status as DocumentStatus)
+      setEditing(false)
+      setDraft(null)
+    } catch (e: unknown) {
+      setDocError(e instanceof Error ? e.message : 'Failed to save document')
+    } finally {
+      setSavingDoc(false)
     }
   }
 
@@ -115,6 +222,10 @@ export function DocumentDetailPage() {
   const issues: ValidationIssue[] = doc.issues ?? []
   const statusDirty = doc.status !== statusDraft
 
+  function fieldClass(name: string, base: string) {
+    return issuesByField[name]?.length ? `${base} ring-2 ring-red-300` : base
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -122,7 +233,7 @@ export function DocumentDetailPage() {
           to="/"
           className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-slate-600 hover:text-slate-950"
         >
-          <span aria-hidden>←</span> Back to documents
+ Back to documents
         </Link>
       </div>
 
@@ -133,10 +244,10 @@ export function DocumentDetailPage() {
               Document
             </p>
             <h1 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
-              {doc.document_number}
+              {doc.document_number || <span className="text-slate-400"> missing number </span>}
             </h1>
             <p className="mt-1 text-sm text-slate-500">
-              #{doc.id} · {doc.document_type} · {doc.supplier_name || '—'}
+              #{doc.id} · {doc.document_type || 'unknown type'} · {doc.supplier_name || '—'}
             </p>
           </div>
 
@@ -147,7 +258,8 @@ export function DocumentDetailPage() {
             <select
               value={statusDraft}
               onChange={(e) => setStatusDraft(e.target.value as DocumentStatus)}
-              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm"
+              disabled={editing}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-900 shadow-sm disabled:opacity-50"
             >
               {DOCUMENT_STATUSES.map((s) => (
                 <option key={s} value={s}>
@@ -157,7 +269,7 @@ export function DocumentDetailPage() {
             </select>
             <button
               type="button"
-              disabled={!statusDirty || saving}
+              disabled={!statusDirty || saving || editing}
               onClick={() => void handleSaveStatus()}
               className="rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -171,26 +283,160 @@ export function DocumentDetailPage() {
           </div>
         </div>
 
-        <dl className="mt-8 grid gap-4 border-t border-slate-100 pt-8 sm:grid-cols-2 lg:grid-cols-4">
-          <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Total</dt>
-            <dd className="mt-1 font-semibold tabular-nums text-slate-950">
-              {formatMoney(doc.total, doc.currency)}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Issue date</dt>
-            <dd className="mt-1 text-slate-800">{formatDate(doc.issue_date)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Due date</dt>
-            <dd className="mt-1 text-slate-800">{formatDate(doc.due_date)}</dd>
-          </div>
-          <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">Updated</dt>
-            <dd className="mt-1 text-slate-600">{formatDate(doc.updated_at)}</dd>
-          </div>
-        </dl>
+        {editing && draft ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              void handleSaveDocument()
+            }}
+            className="mt-8 grid gap-4 border-t border-slate-100 pt-8 sm:grid-cols-2 lg:grid-cols-4"
+          >
+            <Field label="Document type" issues={issuesByField['document_type']}>
+              <input
+                value={draft.document_type}
+                onChange={(e) => setDraft({ ...draft, document_type: e.target.value })}
+                className={fieldClass('document_type', inputClass)}
+                placeholder="invoice / purchase_order"
+              />
+            </Field>
+            <Field label="Supplier name" issues={issuesByField['supplier_name']}>
+              <input
+                value={draft.supplier_name}
+                onChange={(e) => setDraft({ ...draft, supplier_name: e.target.value })}
+                className={fieldClass('supplier_name', inputClass)}
+              />
+            </Field>
+            <Field label="Document number" issues={issuesByField['document_number']}>
+              <input
+                value={draft.document_number}
+                onChange={(e) => setDraft({ ...draft, document_number: e.target.value })}
+                className={fieldClass('document_number', inputClass)}
+              />
+            </Field>
+            <Field label="Currency" issues={issuesByField['currency']}>
+              <input
+                value={draft.currency}
+                onChange={(e) => setDraft({ ...draft, currency: e.target.value })}
+                className={fieldClass('currency', inputClass)}
+                placeholder="EUR"
+              />
+            </Field>
+            <Field label="Issue date" issues={issuesByField['issue_date']}>
+              <input
+                type="date"
+                value={draft.issue_date}
+                onChange={(e) => setDraft({ ...draft, issue_date: e.target.value })}
+                className={fieldClass('issue_date', inputClass)}
+              />
+            </Field>
+            <Field label="Due date" issues={issuesByField['due_date']}>
+              <input
+                type="date"
+                value={draft.due_date}
+                onChange={(e) => setDraft({ ...draft, due_date: e.target.value })}
+                className={fieldClass('due_date', inputClass)}
+              />
+            </Field>
+            <Field label="Subtotal" issues={issuesByField['subtotal']}>
+              <input
+                type="number"
+                step="0.01"
+                value={draft.subtotal}
+                onChange={(e) => setDraft({ ...draft, subtotal: e.target.value })}
+                className={fieldClass('subtotal', inputClass)}
+              />
+            </Field>
+            <Field label="Tax rate %" issues={issuesByField['tax_rate']}>
+              <input
+                type="number"
+                step="0.01"
+                value={draft.tax_rate}
+                onChange={(e) => setDraft({ ...draft, tax_rate: e.target.value })}
+                className={fieldClass('tax_rate', inputClass)}
+              />
+            </Field>
+            <Field label="Discount rate %" issues={issuesByField['discount_rate']}>
+              <input
+                type="number"
+                step="0.01"
+                value={draft.discount_rate}
+                onChange={(e) => setDraft({ ...draft, discount_rate: e.target.value })}
+                className={fieldClass('discount_rate', inputClass)}
+              />
+            </Field>
+            <Field label="Total" issues={issuesByField['total']}>
+              <input
+                type="number"
+                step="0.01"
+                value={draft.total}
+                onChange={(e) => setDraft({ ...draft, total: e.target.value })}
+                className={fieldClass('total', inputClass)}
+              />
+            </Field>
+
+            <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center justify-end gap-3 pt-2">
+              {docError && (
+                <p className="mr-auto text-sm font-medium text-red-700" role="alert">
+                  {docError}
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={cancelEditing}
+                disabled={savingDoc}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={savingDoc}
+                className="rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {savingDoc ? 'Saving…' : 'Save corrections'}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <dl className="mt-8 grid gap-4 border-t border-slate-100 pt-8 sm:grid-cols-2 lg:grid-cols-4">
+              <ReadOnlyField label="Total" issues={issuesByField['total']}>
+                <span className="font-semibold tabular-nums text-slate-950">
+                  {formatMoney(doc.total, doc.currency)}
+                </span>
+              </ReadOnlyField>
+              <ReadOnlyField label="Issue date" issues={issuesByField['issue_date']}>
+                {formatDate(doc.issue_date)}
+              </ReadOnlyField>
+              <ReadOnlyField label="Due date" issues={issuesByField['due_date']}>
+                {formatDate(doc.due_date)}
+              </ReadOnlyField>
+              <ReadOnlyField label="Updated">{formatDate(doc.updated_at)}</ReadOnlyField>
+              <ReadOnlyField label="Subtotal" issues={issuesByField['subtotal']}>
+                {formatMoney(doc.subtotal, doc.currency)}
+              </ReadOnlyField>
+              <ReadOnlyField label="Currency" issues={issuesByField['currency']}>
+                {doc.currency || '—'}
+              </ReadOnlyField>
+              <ReadOnlyField label="Tax rate %" issues={issuesByField['tax_rate']}>
+                {doc.tax_rate ?? '—'}
+              </ReadOnlyField>
+              <ReadOnlyField label="Discount rate %" issues={issuesByField['discount_rate']}>
+                {doc.discount_rate ?? '—'}
+              </ReadOnlyField>
+            </dl>
+
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={startEditing}
+                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50"
+              >
+                Edit fields
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {issues.length > 0 && (
@@ -198,6 +444,8 @@ export function DocumentDetailPage() {
           <h2 className="text-lg font-semibold text-slate-950">Validation issues</h2>
           <p className="mt-1 text-sm text-slate-500">
             {issues.length} issue{issues.length === 1 ? '' : 's'} detected for this document.
+            Use <span className="font-semibold">Edit fields</span> to correct the data — issues
+            will be re-evaluated automatically.
           </p>
           <ul className="mt-4 space-y-3">
             {issues.map((issue) => (
@@ -261,6 +509,47 @@ export function DocumentDetailPage() {
           Close
         </button>
       </div>
+    </div>
+  )
+}
+
+const inputClass =
+  'w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-indigo-300 focus:outline-none focus:ring-2 focus:ring-indigo-200'
+
+type FieldShellProps = {
+  label: string
+  issues?: ValidationIssue[]
+  children: React.ReactNode
+}
+
+function Field({ label, issues, children }: FieldShellProps) {
+  return (
+    <label className="block">
+      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+      <div className="mt-1">{children}</div>
+      {issues?.length ? (
+        <span className="mt-1 block text-xs font-medium text-red-700">
+          {issues.map((i) => i.message).join(' · ')}
+        </span>
+      ) : null}
+    </label>
+  )
+}
+
+function ReadOnlyField({ label, issues, children }: FieldShellProps) {
+  return (
+    <div>
+      <dt className="text-xs font-semibold uppercase tracking-wide text-slate-400">{label}</dt>
+      <dd
+        className={`mt-1 text-slate-800 ${
+          issues?.length ? 'rounded-md bg-red-50 px-2 py-0.5 text-red-900' : ''
+        }`}
+      >
+        {children}
+      </dd>
+      {issues?.length ? (
+        <p className="mt-1 text-xs text-red-700">{issues.map((i) => i.message).join(' · ')}</p>
+      ) : null}
     </div>
   )
 }
