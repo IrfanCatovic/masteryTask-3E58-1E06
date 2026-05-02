@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { deleteDocument } from '../api/documents'
 import type { Document } from '../types/document'
 
 const statusClasses: Record<string, string> = {
@@ -42,10 +44,13 @@ function StatusPill({ status }: { status: string }) {
 
 type Props = {
   documents: Document[]
+  /** Called after a row is deleted so the parent can refresh the list. */
+  onDocumentDeleted?: () => void
 }
 
-export function DocumentTable({ documents }: Props) {
+export function DocumentTable({ documents, onDocumentDeleted }: Props) {
   const navigate = useNavigate()
+  const [busyId, setBusyId] = useState<number | null>(null)
 
   if (documents.length === 0) {
     return (
@@ -70,6 +75,9 @@ export function DocumentTable({ documents }: Props) {
               <th className="px-5 py-3 text-right font-semibold">Total</th>
               <th className="px-5 py-3 font-semibold">Issue date</th>
               <th className="px-5 py-3 font-semibold">Updated</th>
+              <th className="w-24 px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Akcija
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -106,6 +114,34 @@ export function DocumentTable({ documents }: Props) {
                 </td>
                 <td className="px-5 py-4 text-slate-600">{formatDate(doc.issue_date)}</td>
                 <td className="px-5 py-4 text-slate-500">{formatDate(doc.updated_at)}</td>
+                <td className="px-5 py-4 text-right">
+                  <button
+                    type="button"
+                    className="rounded-lg px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                    disabled={busyId !== null}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (
+                        !window.confirm(
+                          `Obrisati dokument ${doc.document_number || '#' + doc.id}?`,
+                        )
+                      ) {
+                        return
+                      }
+                      setBusyId(doc.id)
+                      void deleteDocument(doc.id)
+                        .then(() => onDocumentDeleted?.())
+                        .catch((err: unknown) =>
+                          window.alert(
+                            err instanceof Error ? err.message : 'Brisanje nije uspelo',
+                          ),
+                        )
+                        .finally(() => setBusyId(null))
+                    }}
+                  >
+                    {busyId === doc.id ? '…' : 'Obriši'}
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -164,6 +200,33 @@ export function DocumentTable({ documents }: Props) {
                 </p>
                 <p className="mt-1 text-slate-700">{formatDate(doc.updated_at)}</p>
               </div>
+            </div>
+
+            <div className="mt-4 flex justify-end border-t border-slate-100 pt-3">
+              <button
+                type="button"
+                className="rounded-lg px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50"
+                disabled={busyId !== null}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (
+                    !window.confirm(
+                      `Obrisati dokument ${doc.document_number || '#' + doc.id}?`,
+                    )
+                  ) {
+                    return
+                  }
+                  setBusyId(doc.id)
+                  void deleteDocument(doc.id)
+                    .then(() => onDocumentDeleted?.())
+                    .catch((err: unknown) =>
+                      window.alert(err instanceof Error ? err.message : 'Brisanje nije uspelo'),
+                    )
+                    .finally(() => setBusyId(null))
+                }}
+              >
+                {busyId === doc.id ? 'Brisanje…' : 'Obriši'}
+              </button>
             </div>
           </article>
         ))}

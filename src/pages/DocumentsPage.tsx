@@ -177,7 +177,9 @@ export function DocumentsPage() {
             </div>
           )}
 
-          {!loading && !error && <DocumentTable documents={documents} />}
+          {!loading && !error && (
+            <DocumentTable documents={documents} onDocumentDeleted={() => void loadDocuments()} />
+          )}
         </div>
       </div>
     </section>

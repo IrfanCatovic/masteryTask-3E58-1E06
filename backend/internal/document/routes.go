@@ -533,6 +533,88 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			"issues_count": len(fresh.Issues),
 		})
 	})
+
+	// Delete document and related line items / validation issues.
+	router.DELETE("/documents/:id", func(c *gin.Context) {
+		idParam := c.Param("id")
+		id, err := strconv.ParseUint(idParam, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"message": "invalid document id",
+			})
+			return
+		}
+
+		var doc Document
+		if err := gormDB.First(&doc, uint(id)).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusNotFound, gin.H{
+					"status":  "error",
+					"message": "document not found",
+				})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to fetch document",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		tx := gormDB.Begin()
+		if tx.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to start database transaction",
+				"error":   tx.Error.Error(),
+			})
+			return
+		}
+
+		if err := tx.Where("document_id = ?", id).Delete(&ValidationIssue{}).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to delete validation issues",
+				"error":   err.Error(),
+			})
+			return
+		}
+		if err := tx.Where("document_id = ?", id).Delete(&LineItem{}).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to delete line items",
+				"error":   err.Error(),
+			})
+			return
+		}
+		if err := tx.Delete(&Document{}, uint(id)).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to delete document",
+				"error":   err.Error(),
+			})
+			return
+		}
+		if err := tx.Commit().Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"status":  "error",
+				"message": "failed to commit database transaction",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"message": "document deleted",
+			"id":      id,
+		})
+	})
 }
 
 // parseYYYYMMDDOptional accepts empty string or a calendar date "2006-01-02".

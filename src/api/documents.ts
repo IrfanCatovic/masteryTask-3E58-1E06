@@ -65,6 +65,13 @@ export type UpdateDocumentPayload = Partial<{
   total: number
 }>
 
+export async function deleteDocument(id: number): Promise<void> {
+  const res = await fetch(apiUrl(`/documents/${id}`), { method: 'DELETE' })
+  if (!res.ok) {
+    throw new Error(await readApiError(res))
+  }
+}
+
 export async function updateDocument(id: number, payload: UpdateDocumentPayload): Promise<Document> {
   const res = await fetch(apiUrl(`/documents/${id}`), {
     method: 'PATCH',

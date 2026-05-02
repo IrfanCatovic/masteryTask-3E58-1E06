@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
+  deleteDocument,
   fetchDocument,
   patchDocumentStatus,
   updateDocument,
@@ -103,6 +104,8 @@ export function DocumentDetailPage() {
   const [draft, setDraft] = useState<EditDraft | null>(null)
   const [savingDoc, setSavingDoc] = useState(false)
   const [docError, setDocError] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const id = idParam ? Number.parseInt(idParam, 10) : NaN
 
@@ -176,6 +179,27 @@ export function DocumentDetailPage() {
     setEditing(false)
     setDraft(null)
     setDocError(null)
+  }
+
+  async function handleDeleteDocument() {
+    if (Number.isNaN(id)) return
+    if (
+      !window.confirm(
+        'Da li ste sigurni da želite da obrišete ovaj dokument? Ovo je trajno i brišu se i stavke i validation issue-i.',
+      )
+    ) {
+      return
+    }
+    setDeleteError(null)
+    setDeleting(true)
+    try {
+      await deleteDocument(id)
+      navigate('/')
+    } catch (e: unknown) {
+      setDeleteError(e instanceof Error ? e.message : 'Brisanje nije uspelo')
+    } finally {
+      setDeleting(false)
+    }
   }
 
   async function handleSaveDocument() {
@@ -500,7 +524,20 @@ export function DocumentDetailPage() {
         )}
       </section>
 
-      <div className="flex justify-end">
+      {deleteError && (
+        <p className="text-sm font-medium text-red-700" role="alert">
+          {deleteError}
+        </p>
+      )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <button
+          type="button"
+          disabled={deleting}
+          onClick={() => void handleDeleteDocument()}
+          className="rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700 shadow-sm hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {deleting ? 'Brisanje…' : 'Obriši dokument'}
+        </button>
         <button
           type="button"
           onClick={() => navigate('/')}
