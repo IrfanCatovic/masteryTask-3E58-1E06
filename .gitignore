@@ -24,6 +24,9 @@ dist-ssr
 *.sln
 *.sw?
 
+# Lokalni plan / beleške (ne pushuj)
+MICRO_STEPS.md
+
 # Secrets
 .env
 .env.*
