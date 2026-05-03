@@ -212,6 +212,73 @@ func TestParseTXTKeepsCompoundLabels(t *testing.T) {
 	}
 }
 
+// PDF text extraction often splits "Flyer Design" into two text spans, so a body row ends up
+// with one MORE column than the 4-column header. The positional detector must still recover
+// description="Flyer Design" by treating everything before the trailing (qty, unit, total)
+// numeric trio as the description.
+func TestParseTableMultiWordDescriptionExtraColumns(t *testing.T) {
+	input := strings.Join([]string{
+		"Description    Qty    Unit Price    Total",
+		"Flyer Design    3    300    900",
+		"Logo Pack    2    150    300",
+	}, "\n")
+	res, err := parseTXTDocument(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(res.Document.LineItems); got != 2 {
+		t.Fatalf("want 2 line items, got %d", got)
+	}
+	if first := res.Document.LineItems[0]; first.Description != "Flyer Design" ||
+		!approxEqual(first.Quantity, 3) || !approxEqual(first.UnitPrice, 300) ||
+		!approxEqual(first.LineTotal, 900) {
+		t.Fatalf("first item mismatched, got %+v", first)
+	}
+	if !approxEqual(res.Document.Total, 1200) {
+		t.Fatalf("Total should sum line totals, want 1200 got %g", res.Document.Total)
+	}
+}
+
+// Headerless fallback: when no row reads as a clean 4-column header, we still want to recover
+// line items from rows that end in three numerics where qty * unit ≈ total. This guards against
+// real-world PDFs whose extracted text has no recognisable column titles.
+func TestParseTableHeaderlessFallback(t *testing.T) {
+	input := strings.Join([]string{
+		"Some preamble text",
+		"Date 2024-01-01",
+		"Widget A    2    50    100",
+		"Widget B    3    25    75",
+		"Subtotal: 175",
+	}, "\n")
+	res, err := parseTXTDocument(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(res.Document.LineItems); got != 2 {
+		t.Fatalf("want 2 fallback line items, got %d", got)
+	}
+	if got := res.Document.LineItems[1]; got.Description != "Widget B" || !approxEqual(got.LineTotal, 75) {
+		t.Fatalf("second item mismatched, got %+v", got)
+	}
+}
+
+// Random number triplets must NOT be promoted to line items: if qty*unit doesn't match total
+// for the majority of candidates, the trailing-numerics detector returns nothing.
+func TestParseTableHeaderlessRejectsRandomTriplets(t *testing.T) {
+	input := strings.Join([]string{
+		"Address Line 1 23 5",
+		"Phone 1 800 555",
+		"Random 7 11 13",
+	}, "\n")
+	res, err := parseTXTDocument(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(res.Document.LineItems); got != 0 {
+		t.Fatalf("random triplets must not become line items, got %d", got)
+	}
+}
+
 // A line whose first non-colon row is a table header (e.g. "Description Qty Unit Price Total")
 // must NOT be promoted to "<type> <number>" — that's how PDFs ended up with
 // document_type="description" / document_number="qty".

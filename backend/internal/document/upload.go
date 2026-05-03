@@ -254,8 +254,24 @@ func parsePDFDocument(ctx context.Context, r io.Reader, filename string, opts Up
 			Severity: IssueSeverityError,
 			Resolved: false,
 		})
+	} else if len(res.Document.LineItems) == 0 {
+		// Surface a short peek of the extracted text so the reviewer can tell at a glance whether the
+		// table layout was lost, the PDF was image-only, etc., without having to dig in the logs.
+		preview := text
+		if len(preview) > 240 {
+			preview = preview[:240] + "…"
+		}
+		source := "pdf-text"
+		if usedOCR {
+			source = "ocr.space"
+		}
+		res.ParseIssues = append(res.ParseIssues, ValidationIssue{
+			Code:     "PDF_NO_LINE_ITEMS",
+			Message:  fmt.Sprintf("no line-item table detected (source: %s); raw preview: %s", source, preview),
+			Severity: IssueSeverityWarning,
+			Resolved: false,
+		})
 	}
-	_ = usedOCR
 	return res, nil
 }
 
@@ -464,13 +480,13 @@ func registerLineItemColumnAliases(headers map[string]int, rawLower string, colI
 	}
 	headers[rawLower] = colIdx
 	switch rawLower {
-	case "desc", "description", "item", "name":
+	case "desc", "description", "item", "name", "product", "service", "category":
 		headers["description"] = colIdx
-	case "qty", "quantity", "q":
+	case "qty", "quantity", "q", "count":
 		headers["quantity"] = colIdx
-	case "price", "unit_price", "unitprice", "rate", "unit":
+	case "price", "unit_price", "unit price", "unitprice", "rate", "unit":
 		headers["unit_price"] = colIdx
-	case "line_total", "line total", "amount", "amt":
+	case "line_total", "line total", "linetotal", "amount", "amt":
 		headers["line_total"] = colIdx
 	case "total":
 		headers["total"] = colIdx
@@ -682,6 +698,7 @@ func inferDocumentType(text string) string {
 // (4+ cells), and tries an alias-based mapping first; if that fails, falls back to a positional
 // heuristic (one text column + three numeric columns). Empty result means no recognizable table.
 func parseLineItemsTableFromLines(lines []string) []LineItem {
+	var headerBased []LineItem
 	for i := 0; i < len(lines); i++ {
 		header := splitTableRow(lines[i])
 		if len(header) < 4 {
@@ -689,13 +706,132 @@ func parseLineItemsTableFromLines(lines []string) []LineItem {
 		}
 		body := lines[i+1:]
 		if items := lineItemsByAliasHeader(header, body); len(items) > 0 {
-			return items
+			headerBased = items
+			break
 		}
 		if items := lineItemsByPositionalHeader(header, body); len(items) > 0 {
-			return items
+			headerBased = items
+			break
 		}
 	}
-	return nil
+	// Many PDFs/OCRs flatten or jumble headers so no clean 4-column header survives — and even when
+	// they do, the line we picked might really be the first body row in disguise. We always try the
+	// header-less scanner and prefer it when it finds more rows than the header-based path.
+	fallback := lineItemsByTrailingNumerics(lines)
+	if len(fallback) > len(headerBased) {
+		return fallback
+	}
+	return headerBased
+}
+
+// lineItemsByTrailingNumerics is the header-less fallback. A row qualifies when it ends in three
+// numeric tokens AND has at least one leading text token; we treat the trailing trio as
+// (quantity, unit_price, line_total) in that order. To stay robust against false positives we
+// require that at least half of the candidates satisfy quantity * unit_price ≈ line_total.
+func lineItemsByTrailingNumerics(lines []string) []LineItem {
+	type candidate struct {
+		desc                 string
+		qty, unit, lineTotal float64
+		productMatch         bool
+	}
+	candidates := make([]candidate, 0)
+	for _, line := range lines {
+		row := splitTableRow(line)
+		if len(row) < 4 {
+			continue
+		}
+		n := len(row)
+		q, okQ := extractFloat(row[n-3])
+		u, okU := extractFloat(row[n-2])
+		t, okT := extractFloat(row[n-1])
+		if !(okQ && okU && okT) {
+			continue
+		}
+		var dp []string
+		for j := 0; j < n-3; j++ {
+			if s := strings.TrimSpace(row[j]); s != "" {
+				dp = append(dp, s)
+			}
+		}
+		desc := strings.TrimSpace(strings.Join(dp, " "))
+		if desc == "" {
+			continue
+		}
+		// Drop header-looking rows so "Description Qty Price Total" never enters as data.
+		if isLikelyHeaderDescription(desc) {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			desc:         desc,
+			qty:          q,
+			unit:         u,
+			lineTotal:    t,
+			productMatch: approxProduct(q, u, t),
+		})
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	matches := 0
+	for _, c := range candidates {
+		if c.productMatch {
+			matches++
+		}
+	}
+	// Need at least half of the candidates to satisfy qty*unit≈total before we trust the heuristic.
+	if matches*2 < len(candidates) {
+		return nil
+	}
+	out := make([]LineItem, 0, len(candidates))
+	for _, c := range candidates {
+		out = append(out, LineItem{
+			Description: c.desc,
+			Quantity:    c.qty,
+			UnitPrice:   c.unit,
+			LineTotal:   c.lineTotal,
+		})
+	}
+	return out
+}
+
+// approxProduct returns true when q*u is within ~5 % of t (or both are zero). Used by the
+// header-less line-item detector to filter rows whose number triplet doesn't multiply out.
+func approxProduct(q, u, t float64) bool {
+	if q == 0 || u == 0 {
+		return t == 0
+	}
+	expected := q * u
+	if expected == 0 {
+		return t == 0
+	}
+	diff := expected - t
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff < 0.01 {
+		return true
+	}
+	scale := expected
+	if t > scale {
+		scale = t
+	}
+	if scale < 0 {
+		scale = -scale
+	}
+	return diff/scale < 0.05
+}
+
+// isLikelyHeaderDescription flags rows whose description column is just header words like
+// "DESCRIPTION" / "ITEM" / "CATEGORY" so the trailing-numerics detector skips them when the
+// table header itself accidentally ends in three numbers (e.g. an "ID, Qty, Total" preamble).
+func isLikelyHeaderDescription(desc string) bool {
+	lower := strings.ToLower(desc)
+	for _, kw := range []string{"description", "item", "product", "service", "category", "name"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // lineItemsByAliasHeader maps known column names (description/qty/price/total etc.) to canonical
@@ -740,87 +876,96 @@ func lineItemsByAliasHeader(header []string, body []string) []LineItem {
 }
 
 // lineItemsByPositionalHeader detects 1 description column + 3 numeric columns by sampling the body
-// rows. Header names override positions when they map cleanly (e.g. rate→unit, price/amount→total).
+// rows. When a body row has the same shape as the header we honour header column names
+// (rate→unit, price/amount→total). When the body row has MORE columns than the header (typical
+// when PDF text extraction leaks the description into multiple tokens) we fall back to "everything
+// before the trailing numeric trio is the description" so rows like "Flyer Design 300 3 900" still
+// work even though they split into 5 fields against a 4-column header.
 func lineItemsByPositionalHeader(header []string, body []string) []LineItem {
 	cols := len(header)
 	if cols < 4 || len(body) == 0 {
 		return nil
 	}
-	numCount := make([]int, cols)
-	considered := 0
-	for _, line := range body {
-		row := splitTableRow(line)
-		if len(row) < cols {
-			continue
-		}
-		considered++
-		for j := 0; j < cols; j++ {
-			if _, ok := extractFloat(row[j]); ok {
-				numCount[j]++
-			}
-		}
-	}
-	if considered == 0 {
-		return nil
-	}
-	threshold := (considered*60 + 99) / 100
-	if threshold < 1 {
-		threshold = 1
-	}
-	numericCols := make([]int, 0, cols)
-	textCols := make([]int, 0, cols)
-	for j := 0; j < cols; j++ {
-		if numCount[j] >= threshold {
-			numericCols = append(numericCols, j)
-		} else {
-			textCols = append(textCols, j)
-		}
-	}
-	if len(numericCols) < 3 || len(textCols) < 1 {
-		return nil
-	}
-	descIdx := textCols[0]
-	qtyIdx := numericCols[len(numericCols)-3]
-	unitIdx := numericCols[len(numericCols)-2]
-	totalIdx := numericCols[len(numericCols)-1]
+	qtyCol, unitCol, totalCol := -1, -1, -1
 	for j, h := range header {
 		switch strings.ToLower(strings.TrimSpace(h)) {
 		case "qty", "quantity", "q", "count":
-			qtyIdx = j
-		case "rate", "unit", "unit_price", "unitprice":
-			unitIdx = j
-		case "price", "amount", "amt", "total", "line_total", "line total":
-			totalIdx = j
+			qtyCol = j
+		case "rate", "unit", "unit_price", "unit price", "unitprice":
+			unitCol = j
+		case "price", "amount", "amt", "total", "line_total", "line total", "linetotal":
+			totalCol = j
 		}
 	}
-	out := make([]LineItem, 0)
+	out := make([]LineItem, 0, len(body))
+	productMatches, productChecks := 0, 0
 	for _, line := range body {
 		row := splitTableRow(line)
-		if len(row) <= maxOf(descIdx, qtyIdx, unitIdx, totalIdx) {
+		if len(row) < 4 {
 			continue
 		}
-		desc := strings.TrimSpace(row[descIdx])
+		// Trailing numeric trio: required for any row to qualify as a line item.
+		n := len(row)
+		tailQ, okQ := extractFloat(row[n-3])
+		tailU, okU := extractFloat(row[n-2])
+		tailT, okT := extractFloat(row[n-1])
+		if !(okQ && okU && okT) {
+			continue
+		}
+		// Pick column meanings: header alias mapping when shapes match AND the header column
+		// actually points at a numeric cell, otherwise the trailing trio (positional fallback).
+		var q, u, t float64
+		if len(row) == cols && qtyCol >= 0 && unitCol >= 0 && totalCol >= 0 {
+			if v, ok := extractFloat(row[qtyCol]); ok {
+				q = v
+			} else {
+				q = tailQ
+			}
+			if v, ok := extractFloat(row[unitCol]); ok {
+				u = v
+			} else {
+				u = tailU
+			}
+			if v, ok := extractFloat(row[totalCol]); ok {
+				t = v
+			} else {
+				t = tailT
+			}
+		} else {
+			q, u, t = tailQ, tailU, tailT
+		}
+		// Description = leading non-empty tokens up to (but not including) the trailing numeric trio.
+		// This survives "Flyer Design" (two tokens) collapsing into one description string.
+		var dp []string
+		for j := 0; j < n-3; j++ {
+			if s := strings.TrimSpace(row[j]); s != "" {
+				dp = append(dp, s)
+			}
+		}
+		desc := strings.TrimSpace(strings.Join(dp, " "))
 		if desc == "" {
 			continue
 		}
+		if isLikelyHeaderDescription(desc) {
+			continue
+		}
+		productChecks++
+		if approxProduct(q, u, t) {
+			productMatches++
+		}
 		out = append(out, LineItem{
 			Description: desc,
-			Quantity:    parseFloat(row[qtyIdx]),
-			UnitPrice:   parseFloat(row[unitIdx]),
-			LineTotal:   parseFloat(row[totalIdx]),
+			Quantity:    q,
+			UnitPrice:   u,
+			LineTotal:   t,
 		})
 	}
-	return out
-}
-
-func maxOf(values ...int) int {
-	m := values[0]
-	for _, v := range values[1:] {
-		if v > m {
-			m = v
-		}
+	// Sanity gate: when the table is genuinely a line-item table, q*u≈t holds for the majority of
+	// rows. If almost no row passes, we very likely picked up an unrelated number triplet table.
+	if productChecks > 0 && productMatches*2 < productChecks {
+		return nil
 	}
-	return m
+	return out
 }
 
 // splitTableRow tokenizes a single free-text row into columns. Order of attempts: tabs, CSV (commas),

@@ -16,6 +16,7 @@ const (
 	IssueCodeInvalidDate        = "INVALID_DATE"
 	IssueCodeImageOCREmpty     = "IMAGE_OCR_EMPTY"
 	IssueSeverityError          = "error"
+	IssueSeverityWarning        = "warning"
 	DefaultMoneyEpsilon float64 = 0.01
 )
 
