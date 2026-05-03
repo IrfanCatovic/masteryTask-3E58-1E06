@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"masterytask/internal/config"
@@ -75,7 +77,21 @@ func main() {
 		OCRSpaceAPIKey: cfg.OCRSpaceAPIKey,
 	})
 
-	if err := router.Run(":8080"); err != nil {
+	// Render, Railway, Fly, etc. set PORT; local dev uses 8080 if unset.
+	addr := listenAddr()
+	log.Printf("listening on %s", addr)
+	if err := router.Run(addr); err != nil {
 		log.Fatalf("Failed to start HTTP server: %v", err)
 	}
+}
+
+func listenAddr() string {
+	p := strings.TrimSpace(os.Getenv("PORT"))
+	if p == "" {
+		return ":8080"
+	}
+	if strings.HasPrefix(p, ":") {
+		return p
+	}
+	return ":" + p
 }

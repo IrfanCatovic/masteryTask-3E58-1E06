@@ -88,11 +88,53 @@ src/components/           # Shared UI (e.g. upload form)
 
 ---
 
-## Deploy checklist
+## Deploy checklist (Vercel + Render + Neon)
 
-- Provision PostgreSQL and set the same `DB_*` variables on the host.
-- Set `OCR_SPACE_API_KEY` on the host only if you need image uploads.
-- Build the frontend with `npm run build`; configure **`VITE_API_URL`** if the UI and API have different origins.
+**Readiness:** the API now respects the **`PORT`** environment variable (required on Render). For a split front/back deploy, use **one** of the two API strategies below.
+
+### 1) Neon (Postgres)
+
+Create a project in [Neon](https://neon.tech) and open the **connection string** (URI), e.g. `postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require`.
+
+Map it to the variables this app expects (no `DATABASE_URL` in code today):
+
+| App variable   | From Neon URI |
+|----------------|---------------|
+| `DB_USER`      | user before `@` |
+| `DB_PASSWORD`  | password |
+| `DB_HOST`      | host (e.g. `ep-…region.aws.neon.tech`) |
+| `DB_NAME`      | path after `/` (e.g. `neondb`) |
+| `DB_PORT`      | `5432` if not in URI |
+| `DB_SSLMODE`   | `require` (Neon needs SSL) |
+| `DB_TIMEZONE`  | `UTC` is fine |
+
+Put these on **Render** (API service), not on Vercel.
+
+### 2) Render (Go API)
+
+- **Runtime:** native Go or Docker (Dockerfile optional).
+- **Build:** e.g. `go build -o bin/api ./cmd/api` from `backend/` (set root directory to `backend` in Render if the repo is monorepo).
+- **Start:** `./bin/api` (or `bin/api` depending on path).
+- **Env:** all `DB_*` from Neon, optional `OCR_SPACE_API_KEY`, optional `GIN_MODE=release`.
+- Copy your service URL, e.g. `https://your-api.onrender.com`.
+
+Free-tier Render instances **sleep** when idle; first request after idle can take ~30–60s.
+
+### 3) Vercel (frontend)
+
+**Recommended:** keep the browser on **same origin** and proxy API calls through Vercel (no CORS changes on the Go server).
+
+1. Edit [`vercel.json`](vercel.json): replace `REPLACE-WITH-YOUR-RENDER-URL.onrender.com` with your **real** Render hostname (no `https://` duplicate — the template already includes `https://`).
+2. Deploy the repo root; **do not** set `VITE_API_URL` in production if you use this rewrite (the app keeps using `/api` like local dev).
+
+How it works: the UI calls `/api/documents/…`; Vercel forwards to `https://your-api.onrender.com/documents/…`, matching the Go routes.
+
+**Alternative:** set **`VITE_API_URL`** to your Render API base URL in Vercel env at build time. Then the browser calls the API **cross-origin** — you must add **CORS** on the Go server (not included in this repo); prefer the `vercel.json` rewrite unless you need direct API access from other sites.
+
+### 4) Smoke test after deploy
+
+- Open `https://<vercel-app>/api/health` — should return JSON from Render.
+- Open the app, list documents, try a small upload.
 
 ---
 
