@@ -58,7 +58,8 @@ The stack section below is the standard Vite + React baseline; project-specific 
 |----------|--------|---------|
 | `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_PORT`, `DB_SSLMODE`, `DB_TIMEZONE` | `backend/.env` | Required for the API. |
 | `OCR_SPACE_API_KEY` | `backend/.env` or host env | Optional; required for **image** uploads only. |
-| `VITE_API_URL` | build-time (frontend) | Set when the SPA is served **separately** from the API: full base URL of the API, **no** trailing slash. |
+| `CORS_ALLOWED_ORIGINS` | API env | Optional; comma-separated **exact** `Origin` values (e.g. `https://app.vercel.app`). Empty ⇒ **no** CORS middleware (fine for same-origin or Vite proxy). Implemented in [`backend/internal/middleware/cors.go`](backend/internal/middleware/cors.go). |
+| `VITE_API_URL` | build-time (frontend) | Set when the SPA calls the API **directly** on another host: full API base URL, **no** trailing slash. Requires **`CORS_ALLOWED_ORIGINS`** to include your SPA origin (see deploy section). |
 
 Do **not** commit real secrets; keep `.env` out of version control.
 
@@ -78,8 +79,9 @@ Do **not** commit real secrets; keep `.env` out of version control.
 ## Repository layout (high level)
 
 ```text
-backend/cmd/api/          # API entrypoint
-backend/internal/config/  # Env loading (incl. optional OCR key)
+backend/cmd/api/           # API entrypoint
+backend/internal/config/   # Env loading (DB, optional OCR, optional CORS list)
+backend/internal/middleware/ # Cross-cutting HTTP (CORS)
 backend/internal/document/ # Routes, upload, parsing, OCR helper
 src/api/                  # Fetch helpers and document endpoints
 src/pages/                # Route-level screens
@@ -115,7 +117,7 @@ Put these on **Render** (API service), not on Vercel.
 - **Runtime:** native Go or Docker (Dockerfile optional).
 - **Build:** e.g. `go build -o bin/api ./cmd/api` from `backend/` (set root directory to `backend` in Render if the repo is monorepo).
 - **Start:** `./bin/api` (or `bin/api` depending on path).
-- **Env:** all `DB_*` from Neon, optional `OCR_SPACE_API_KEY`, optional `GIN_MODE=release`.
+- **Env:** all `DB_*` from Neon, optional `OCR_SPACE_API_KEY`, optional `CORS_ALLOWED_ORIGINS` (needed only if the browser hits this URL directly from another origin), optional `GIN_MODE=release`.
 - Copy your service URL, e.g. `https://your-api.onrender.com`.
 
 Free-tier Render instances **sleep** when idle; first request after idle can take ~30–60s.
@@ -129,7 +131,7 @@ Free-tier Render instances **sleep** when idle; first request after idle can tak
 
 How it works: the UI calls `/api/documents/…`; Vercel forwards to `https://your-api.onrender.com/documents/…`, matching the Go routes.
 
-**Alternative:** set **`VITE_API_URL`** to your Render API base URL in Vercel env at build time. Then the browser calls the API **cross-origin** — you must add **CORS** on the Go server (not included in this repo); prefer the `vercel.json` rewrite unless you need direct API access from other sites.
+**Alternative (direct API URL):** set **`VITE_API_URL`** at build time to your Render API base (e.g. `https://your-api.onrender.com`). On Render, set **`CORS_ALLOWED_ORIGINS`** to your **exact** SPA origin(s), comma-separated (e.g. `https://your-app.vercel.app` — no path). For local testing against a remote API, include `http://localhost:5173`. Omit **`CORS_ALLOWED_ORIGINS`** only when using the `/api` rewrite (same-origin).
 
 ### 4) Smoke test after deploy
 

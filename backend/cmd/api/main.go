@@ -11,6 +11,7 @@ import (
 	"masterytask/internal/config"
 	"masterytask/internal/db"
 	"masterytask/internal/document"
+	"masterytask/internal/middleware"
 
 	"github.com/gin-gonic/gin"
 )
@@ -38,6 +39,7 @@ func main() {
 
 	// Start the server
 	router := gin.Default()
+	router.Use(middleware.CORS(cfg.CORSAllowedOrigins))
 	// Check server health
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
