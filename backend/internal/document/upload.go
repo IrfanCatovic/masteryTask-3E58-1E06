@@ -80,7 +80,8 @@ func registerUploadRoutes(router *gin.Engine, gormDB *gorm.DB, uploadOpts Upload
 			return
 		}
 
-		if err := tx.Create(&doc).Error; err != nil {
+		// Do not let GORM persist LineItems here — we set DocumentID and save them in a second step.
+		if err := tx.Omit("LineItems").Create(&doc).Error; err != nil {
 			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"status":  "error",
