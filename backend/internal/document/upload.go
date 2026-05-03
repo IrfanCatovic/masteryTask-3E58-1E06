@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -17,6 +18,13 @@ import (
 	"github.com/ledongthuc/pdf"
 	"gorm.io/gorm"
 )
+
+// multiSpaceRe matches two or more whitespace characters (used to split aligned table rows from OCR/PDF text).
+var multiSpaceRe = regexp.MustCompile(`[ \t]{2,}`)
+
+// invoiceNumberRe pulls the document number from labels like "Invoice No. INV-1234" or "INVOICE #143999".
+// The "no/number/#" marker is required so a bare "INVOICE" line doesn't get mistaken for the number itself.
+var invoiceNumberRe = regexp.MustCompile(`(?i)(?:invoice|document|order|receipt|po|bill)\s*(?:no\.?|number|num\.?|#)\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9\-_/]{0,40})`)
 
 // UploadOptions configures optional behaviour for multipart ingestion (e.g. OCR.space for images).
 type UploadOptions struct {
@@ -154,7 +162,7 @@ func parseUploadedDocument(ctx context.Context, fileHeader *multipart.FileHeader
 	case ".txt":
 		return parseTXTDocument(file)
 	case ".pdf":
-		return parsePDFDocument(file)
+		return parsePDFDocument(ctx, file, fileHeader.Filename, opts)
 	case ".png", ".jpg", ".jpeg", ".webp":
 		return parseImageDocument(ctx, file, fileHeader.Filename, opts)
 	default:
@@ -189,26 +197,27 @@ func parseImageDocument(ctx context.Context, r io.Reader, filename string, opts 
 	return res, nil
 }
 
-// parsePDFDocument extracts plain text with github.com/ledongthuc/pdf and reuses the TXT parser.
-// Image-only (scanned) PDFs often yield no text layer upload still succeeds with a validation issue.
-func parsePDFDocument(r io.Reader) (parseResult, error) {
+// parsePDFDocument tries page-by-page text extraction first (preserves visual order better than the
+// library's GetPlainText), falls back to GetPlainText, and finally to OCR.space when no usable text
+// can be found and an OCR API key is configured. Always reuses the TXT parser for downstream parsing.
+func parsePDFDocument(ctx context.Context, r io.Reader, filename string, opts UploadOptions) (parseResult, error) {
 	b, err := io.ReadAll(r)
 	if err != nil {
 		return parseResult{}, err
 	}
-	pdfReader, err := pdf.NewReader(bytes.NewReader(b), int64(len(b)))
+	text, err := extractPDFText(b)
 	if err != nil {
 		return parseResult{}, fmt.Errorf("invalid or encrypted pdf: %w", err)
 	}
-	textReader, err := pdfReader.GetPlainText()
-	if err != nil {
-		return parseResult{}, fmt.Errorf("pdf text extraction failed: %w", err)
+	text = strings.TrimSpace(text)
+
+	usedOCR := false
+	if text == "" && strings.TrimSpace(opts.OCRSpaceAPIKey) != "" {
+		if ocrText, ocrErr := OCRSpaceExtractText(ctx, opts.OCRSpaceAPIKey, b, filename); ocrErr == nil {
+			text = strings.TrimSpace(ocrText)
+			usedOCR = true
+		}
 	}
-	rawText, err := io.ReadAll(textReader)
-	if err != nil {
-		return parseResult{}, err
-	}
-	text := strings.TrimSpace(string(rawText))
 
 	res, err := parseTXTDocument(strings.NewReader(text))
 	if err != nil {
@@ -216,13 +225,62 @@ func parsePDFDocument(r io.Reader) (parseResult, error) {
 	}
 	if text == "" {
 		res.ParseIssues = append(res.ParseIssues, ValidationIssue{
-			Code:      "PDF_NO_EXTRACTABLE_TEXT",
-			Message:   "no extractable text in this pdf (image-only scans need OCR)",
-			Severity:  IssueSeverityError,
-			Resolved:  false,
+			Code:     "PDF_NO_EXTRACTABLE_TEXT",
+			Message:  "no extractable text in this pdf (image-only scans need OCR with a configured OCR_SPACE_API_KEY)",
+			Severity: IssueSeverityError,
+			Resolved: false,
 		})
 	}
+	_ = usedOCR
 	return res, nil
+}
+
+// extractPDFText prefers page-by-page row-based extraction (preserves table layout) and falls back
+// to the library's whole-document GetPlainText when row extraction yields nothing.
+func extractPDFText(data []byte) (string, error) {
+	reader, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", err
+	}
+	var buf strings.Builder
+	totalPages := reader.NumPage()
+	for i := 1; i <= totalPages; i++ {
+		page := reader.Page(i)
+		if page.V.IsNull() {
+			continue
+		}
+		rows, rowsErr := page.GetTextByRow()
+		if rowsErr != nil {
+			continue
+		}
+		for _, row := range rows {
+			parts := make([]string, 0, len(row.Content))
+			for _, t := range row.Content {
+				if s := strings.TrimSpace(t.S); s != "" {
+					parts = append(parts, s)
+				}
+			}
+			if len(parts) == 0 {
+				continue
+			}
+			// Two spaces preserve column boundaries for splitTableRow downstream.
+			buf.WriteString(strings.Join(parts, "  "))
+			buf.WriteString("\n")
+		}
+		buf.WriteString("\n")
+	}
+	if strings.TrimSpace(buf.String()) != "" {
+		return buf.String(), nil
+	}
+	textReader, err := reader.GetPlainText()
+	if err != nil {
+		return "", nil
+	}
+	raw, err := io.ReadAll(textReader)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 // parseResult vraća parsirani dokument zajedno sa "soft" issue-ima
@@ -251,6 +309,9 @@ func parseCSVDocument(r io.Reader) (parseResult, error) {
 		first = rows[1]
 	}
 
+	// get reads a labelled column from the first data row only — fine for document-level fields, but
+	// it is NEVER used for the line-item "total" column (which exists once per row). We sum the
+	// per-row totals or read an explicit grand_total / invoice_total instead.
 	get := func(name string) string {
 		idx, ok := headers[name]
 		if !ok || idx < 0 || idx >= len(first) {
@@ -264,11 +325,16 @@ func parseCSVDocument(r io.Reader) (parseResult, error) {
 		SupplierName:   get("supplier_name"),
 		DocumentNumber: get("document_number"),
 		Status:         get("status"),
-		Currency:       strings.ToUpper(get("currency")),
 		Subtotal:       parseFloat(get("subtotal")),
 		TaxRate:        parseFloat(get("tax_rate")),
 		DiscountRate:   parseFloat(get("discount_rate")),
-		Total:          parseFloat(get("total")),
+	}
+	if cur := strings.TrimSpace(get("currency")); cur != "" {
+		if hint := detectCurrency(cur); hint != "" {
+			doc.Currency = hint
+		} else {
+			doc.Currency = strings.ToUpper(cur)
+		}
 	}
 	if doc.Status == "" {
 		doc.Status = "uploaded"
@@ -293,26 +359,67 @@ func parseCSVDocument(r io.Reader) (parseResult, error) {
 		}
 	}
 
-	// Optional line-item columns from each row.
-	_, hasDesc := headers["description"]
-	_, hasQty := headers["quantity"]
-	_, hasUnit := headers["unit_price"]
-	_, hasTotal := headers["line_total"]
-	if hasDesc && hasQty && hasUnit && hasTotal && len(rows) >= 2 {
-		for _, row := range rows[1:] {
-			item := LineItem{
-				Description: readRowValue(row, headers["description"]),
-				Quantity:    parseFloat(readRowValue(row, headers["quantity"])),
-				UnitPrice:   parseFloat(readRowValue(row, headers["unit_price"])),
-				LineTotal:   parseFloat(readRowValue(row, headers["line_total"])),
-			}
-			if item.Description != "" {
-				doc.LineItems = append(doc.LineItems, item)
-			}
+	// Line items come from the same CSV via the universal table detector — alias-first, positional
+	// fallback. This handles both well-named exports (description/quantity/unit_price/line_total)
+	// and short forms (desc/qty/price/total) without bespoke if/else.
+	if len(rows) >= 2 {
+		body := rows[1:]
+		if items := lineItemsFromCSVRows(rows[0], body); len(items) > 0 {
+			doc.LineItems = items
 		}
 	}
 
+	// Document-level total: explicit grand_total/invoice_total/document_total wins; otherwise sum the
+	// line totals when we have any. Do not fall back to the first row's "total" cell — that's a per-line value.
+	if v := strings.TrimSpace(get("grand_total")); v != "" {
+		doc.Total = parseFloat(v)
+	} else if v := strings.TrimSpace(get("invoice_total")); v != "" {
+		doc.Total = parseFloat(v)
+	} else if v := strings.TrimSpace(get("document_total")); v != "" {
+		doc.Total = parseFloat(v)
+	} else if len(doc.LineItems) > 0 {
+		var sum float64
+		for _, it := range doc.LineItems {
+			sum += it.LineTotal
+		}
+		doc.Total = sum
+	}
+
 	return parseResult{Document: doc, ParseIssues: parseIssues}, nil
+}
+
+// lineItemsFromCSVRows turns the CSV body rows into strings compatible with the same table
+// detection used for OCR/PDF text. Reusing one detector keeps every format on a single rule set.
+func lineItemsFromCSVRows(header []string, body [][]string) []LineItem {
+	if items := lineItemsByAliasHeader(header, csvBodyToLines(header, body)); len(items) > 0 {
+		return items
+	}
+	return lineItemsByPositionalHeader(header, csvBodyToLines(header, body))
+}
+
+func csvBodyToLines(header []string, body [][]string) []string {
+	out := make([]string, 0, len(body))
+	for _, row := range body {
+		if len(row) == 0 {
+			continue
+		}
+		// pad/truncate to header width so column indices line up after re-splitting
+		if len(row) < len(header) {
+			padded := make([]string, len(header))
+			copy(padded, row)
+			row = padded
+		}
+		// Re-emit as CSV so splitTableRow can parse with the same comma path.
+		buf := &strings.Builder{}
+		w := csv.NewWriter(buf)
+		_ = w.Write(row[:len(header)])
+		w.Flush()
+		line := strings.TrimRight(buf.String(), "\n\r")
+		if strings.TrimSpace(line) != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // buildCSVHeaderIndex maps the header row to column indices, including aliases for line-item
@@ -354,153 +461,301 @@ func parseTXTDocument(r io.Reader) (parseResult, error) {
 	if err != nil {
 		return parseResult{}, err
 	}
-
+	rawText := string(b)
 	doc := Document{Status: "uploaded"}
 	parseIssues := make([]ValidationIssue, 0)
-	lines := make([]string, 0)
-	for _, raw := range strings.Split(string(b), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" {
-			continue
-		}
-		lines = append(lines, line)
-	}
+	lines := splitNonEmptyLines(rawText)
 
-	// Real-world TXT format from the task dataset:
-	// Line 1: "Invoice TXT-1"
-	// Line 2: "Total: 406 EUR"
-	if len(lines) > 0 {
-		titleParts := strings.Fields(lines[0])
-		if len(titleParts) >= 2 {
-			doc.DocumentType = strings.ToLower(strings.TrimSpace(titleParts[0]))
+	// First non-empty line acts as a "Title Number" header (e.g. "Invoice TXT-1") only when it
+	// doesn't carry its own colon-separated payload — otherwise we let the key/value pass handle it.
+	if len(lines) > 0 && !strings.Contains(lines[0], ":") {
+		if titleParts := strings.Fields(lines[0]); len(titleParts) >= 2 {
+			doc.DocumentType = strings.ToLower(titleParts[0])
 			doc.DocumentNumber = strings.TrimSpace(titleParts[1])
 		}
 	}
-	if len(lines) > 1 {
-		second := lines[1]
-		if strings.HasPrefix(strings.ToLower(second), "total:") {
-			totalPayload := strings.TrimSpace(strings.TrimPrefix(second, "Total:"))
-			totalParts := strings.Fields(totalPayload)
-			if len(totalParts) >= 1 {
-				doc.Total = parseFloat(totalParts[0])
-			}
-			if len(totalParts) >= 2 {
-				doc.Currency = strings.ToUpper(strings.TrimSpace(totalParts[1]))
-			}
-		}
+
+	for _, line := range lines {
+		applyKeyValueLine(line, &doc, &parseIssues)
 	}
 
-	// Backward-compatible fallback for key:value txt format.
-	for _, line := range lines {
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
+	// Heuristic: if document number is still missing, look for "Invoice No. X" / "INVOICE #X" anywhere.
+	if strings.TrimSpace(doc.DocumentNumber) == "" {
+		if m := invoiceNumberRe.FindStringSubmatch(rawText); len(m) > 1 {
+			doc.DocumentNumber = strings.TrimSpace(m[1])
 		}
-
-		key := strings.ToLower(strings.TrimSpace(parts[0]))
-		val := strings.TrimSpace(parts[1])
-		switch key {
-		case "document_type":
-			doc.DocumentType = val
-		case "supplier_name":
-			doc.SupplierName = val
-		case "document_number":
-			doc.DocumentNumber = val
-		case "status":
-			if val != "" {
-				doc.Status = val
-			}
-		case "currency":
-			doc.Currency = strings.ToUpper(strings.TrimSpace(val))
-		case "subtotal":
-			doc.Subtotal = parseFloat(val)
-		case "tax_rate":
-			doc.TaxRate = parseFloat(val)
-		case "discount_rate":
-			doc.DiscountRate = parseFloat(val)
-		case "total":
-			doc.Total = parseFloat(val)
-		case "issue_date":
-			if val != "" {
-				t, err := parseYYYYMMDDOptional(val)
-				if err != nil {
-					parseIssues = append(parseIssues, newInvalidDateIssue("issue_date", val))
-				} else {
-					doc.IssueDate = t
-				}
-			}
-		case "due_date":
-			if val != "" {
-				t, err := parseYYYYMMDDOptional(val)
-				if err != nil {
-					parseIssues = append(parseIssues, newInvalidDateIssue("due_date", val))
-				} else {
-					doc.DueDate = t
-				}
-			}
-		}
+	}
+	// Heuristic: infer document type from common keywords when missing.
+	if strings.TrimSpace(doc.DocumentType) == "" {
+		doc.DocumentType = inferDocumentType(rawText)
 	}
 
 	if len(doc.LineItems) == 0 {
 		doc.LineItems = parseLineItemsTableFromLines(lines)
 	}
+	// When we have line items and the document didn't declare its own total via a labelled line,
+	// fall back to summing line totals so doc.Total matches the table.
+	if len(doc.LineItems) > 0 && doc.Total == 0 {
+		var sum float64
+		for _, it := range doc.LineItems {
+			sum += it.LineTotal
+		}
+		doc.Total = sum
+	}
 
 	return parseResult{Document: doc, ParseIssues: parseIssues}, nil
 }
 
-// parseLineItemsTableFromLines finds a header row (desc/qty/price/total or equivalents) and
-// parses following rows into LineItems. Helps OCR/PDF text and plain-text invoice dumps.
-func parseLineItemsTableFromLines(lines []string) []LineItem {
-	var out []LineItem
-	for i := 0; i < len(lines); i++ {
-		cells := splitTableRow(lines[i])
-		if len(cells) < 4 {
-			continue
+// splitNonEmptyLines normalises CRLF/CR endings and drops empty lines so downstream parsers can
+// treat lines positionally without worrying about layout artefacts.
+func splitNonEmptyLines(s string) []string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	out := make([]string, 0)
+	for _, raw := range strings.Split(s, "\n") {
+		if line := strings.TrimSpace(raw); line != "" {
+			out = append(out, line)
 		}
-		h := make(map[string]int)
-		for j, c := range cells {
-			key := strings.ToLower(strings.TrimSpace(c))
-			registerLineItemColumnAliases(h, key, j)
-		}
-		if _, ok := h["description"]; !ok {
-			continue
-		}
-		if _, ok := h["quantity"]; !ok {
-			continue
-		}
-		if _, ok := h["unit_price"]; !ok {
-			continue
-		}
-		if _, ok := h["line_total"]; !ok {
-			continue
-		}
-		maxIdx := h["description"]
-		for _, k := range []string{"quantity", "unit_price", "line_total"} {
-			if h[k] > maxIdx {
-				maxIdx = h[k]
-			}
-		}
-		for j := i + 1; j < len(lines); j++ {
-			row := splitTableRow(lines[j])
-			if len(row) <= maxIdx {
-				break
-			}
-			item := LineItem{
-				Description: readRowValue(row, h["description"]),
-				Quantity:    parseFloat(readRowValue(row, h["quantity"])),
-				UnitPrice:   parseFloat(readRowValue(row, h["unit_price"])),
-				LineTotal:   parseFloat(readRowValue(row, h["line_total"])),
-			}
-			if strings.TrimSpace(item.Description) == "" {
-				continue
-			}
-			out = append(out, item)
-		}
-		break
 	}
 	return out
 }
 
+// applyKeyValueLine recognises "Label: value" lines and updates the document accordingly. Labels are
+// normalised (lowercased, spaces -> underscores) so "Total Due" and "total_due" are equivalent.
+func applyKeyValueLine(line string, doc *Document, parseIssues *[]ValidationIssue) {
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return
+	}
+	key := strings.ToLower(strings.TrimSpace(parts[0]))
+	key = strings.ReplaceAll(key, " ", "_")
+	val := strings.TrimSpace(parts[1])
+	switch key {
+	case "document_type", "type", "kind":
+		if val != "" {
+			doc.DocumentType = strings.ToLower(val)
+		}
+	case "supplier_name", "supplier", "vendor", "from", "seller":
+		if val != "" {
+			doc.SupplierName = val
+		}
+	case "document_number", "invoice_number", "invoice_no", "invoice_no.", "invoice_#",
+		"number", "no", "no.", "ref", "reference":
+		if val != "" {
+			doc.DocumentNumber = val
+		}
+	case "status":
+		if val != "" {
+			doc.Status = val
+		}
+	case "currency":
+		if cur := detectCurrency(val); cur != "" {
+			doc.Currency = cur
+		} else if val != "" {
+			doc.Currency = strings.ToUpper(val)
+		}
+	case "subtotal", "sub_total", "net":
+		if n, ok := extractFloat(val); ok {
+			doc.Subtotal = n
+		}
+	case "tax_rate", "vat_rate", "tax", "vat":
+		if n, ok := extractFloat(val); ok {
+			doc.TaxRate = n
+		}
+	case "discount_rate", "discount":
+		if n, ok := extractFloat(val); ok {
+			doc.DiscountRate = n
+		}
+	case "total", "total_due", "grand_total", "amount_due", "balance_due", "ukupno", "iznos":
+		if n, ok := extractFloat(val); ok {
+			doc.Total = n
+		}
+		if doc.Currency == "" {
+			if cur := detectCurrency(val); cur != "" {
+				doc.Currency = cur
+			}
+		}
+	case "issue_date", "date", "invoice_date":
+		if val != "" {
+			if t, err := parseYYYYMMDDOptional(val); err == nil {
+				doc.IssueDate = t
+			} else {
+				*parseIssues = append(*parseIssues, newInvalidDateIssue("issue_date", val))
+			}
+		}
+	case "due_date", "due", "payment_due":
+		if val != "" {
+			if t, err := parseYYYYMMDDOptional(val); err == nil {
+				doc.DueDate = t
+			} else {
+				*parseIssues = append(*parseIssues, newInvalidDateIssue("due_date", val))
+			}
+		}
+	}
+}
+
+// inferDocumentType makes a best-effort guess from the raw text when no explicit field is present.
+// Returning an empty string means "still unknown" so validation will flag it as missing.
+func inferDocumentType(text string) string {
+	upper := strings.ToUpper(text)
+	switch {
+	case strings.Contains(upper, "INVOICE"), strings.Contains(upper, "FAKTURA"):
+		return "invoice"
+	case strings.Contains(upper, "RECEIPT"), strings.Contains(upper, "RAČUN"), strings.Contains(upper, "RACUN"):
+		return "receipt"
+	case strings.Contains(upper, "PURCHASE ORDER"), strings.Contains(upper, "ORDER FORM"):
+		return "purchase_order"
+	}
+	return ""
+}
+
+// parseLineItemsTableFromLines walks free-text lines, looks for the first plausible header row
+// (4+ cells), and tries an alias-based mapping first; if that fails, falls back to a positional
+// heuristic (one text column + three numeric columns). Empty result means no recognizable table.
+func parseLineItemsTableFromLines(lines []string) []LineItem {
+	for i := 0; i < len(lines); i++ {
+		header := splitTableRow(lines[i])
+		if len(header) < 4 {
+			continue
+		}
+		body := lines[i+1:]
+		if items := lineItemsByAliasHeader(header, body); len(items) > 0 {
+			return items
+		}
+		if items := lineItemsByPositionalHeader(header, body); len(items) > 0 {
+			return items
+		}
+	}
+	return nil
+}
+
+// lineItemsByAliasHeader maps known column names (description/qty/price/total etc.) to canonical
+// fields and reads following rows. Returns empty slice when the header lacks the four required roles.
+func lineItemsByAliasHeader(header []string, body []string) []LineItem {
+	h := make(map[string]int)
+	for j, c := range header {
+		key := strings.ToLower(strings.TrimSpace(c))
+		registerLineItemColumnAliases(h, key, j)
+	}
+	desc, hasDesc := h["description"]
+	qty, hasQty := h["quantity"]
+	unit, hasUnit := h["unit_price"]
+	total, hasTotal := h["line_total"]
+	if !(hasDesc && hasQty && hasUnit && hasTotal) {
+		return nil
+	}
+	maxIdx := desc
+	for _, k := range []int{qty, unit, total} {
+		if k > maxIdx {
+			maxIdx = k
+		}
+	}
+	out := make([]LineItem, 0)
+	for _, line := range body {
+		row := splitTableRow(line)
+		if len(row) <= maxIdx {
+			break
+		}
+		item := LineItem{
+			Description: readRowValue(row, desc),
+			Quantity:    parseFloat(readRowValue(row, qty)),
+			UnitPrice:   parseFloat(readRowValue(row, unit)),
+			LineTotal:   parseFloat(readRowValue(row, total)),
+		}
+		if strings.TrimSpace(item.Description) == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// lineItemsByPositionalHeader detects 1 description column + 3 numeric columns by sampling the body
+// rows. Header names override positions when they map cleanly (e.g. rate→unit, price/amount→total).
+func lineItemsByPositionalHeader(header []string, body []string) []LineItem {
+	cols := len(header)
+	if cols < 4 || len(body) == 0 {
+		return nil
+	}
+	numCount := make([]int, cols)
+	considered := 0
+	for _, line := range body {
+		row := splitTableRow(line)
+		if len(row) < cols {
+			continue
+		}
+		considered++
+		for j := 0; j < cols; j++ {
+			if _, ok := extractFloat(row[j]); ok {
+				numCount[j]++
+			}
+		}
+	}
+	if considered == 0 {
+		return nil
+	}
+	threshold := (considered*60 + 99) / 100
+	if threshold < 1 {
+		threshold = 1
+	}
+	numericCols := make([]int, 0, cols)
+	textCols := make([]int, 0, cols)
+	for j := 0; j < cols; j++ {
+		if numCount[j] >= threshold {
+			numericCols = append(numericCols, j)
+		} else {
+			textCols = append(textCols, j)
+		}
+	}
+	if len(numericCols) < 3 || len(textCols) < 1 {
+		return nil
+	}
+	descIdx := textCols[0]
+	qtyIdx := numericCols[len(numericCols)-3]
+	unitIdx := numericCols[len(numericCols)-2]
+	totalIdx := numericCols[len(numericCols)-1]
+	for j, h := range header {
+		switch strings.ToLower(strings.TrimSpace(h)) {
+		case "qty", "quantity", "q", "count":
+			qtyIdx = j
+		case "rate", "unit", "unit_price", "unitprice":
+			unitIdx = j
+		case "price", "amount", "amt", "total", "line_total", "line total":
+			totalIdx = j
+		}
+	}
+	out := make([]LineItem, 0)
+	for _, line := range body {
+		row := splitTableRow(line)
+		if len(row) <= maxOf(descIdx, qtyIdx, unitIdx, totalIdx) {
+			continue
+		}
+		desc := strings.TrimSpace(row[descIdx])
+		if desc == "" {
+			continue
+		}
+		out = append(out, LineItem{
+			Description: desc,
+			Quantity:    parseFloat(row[qtyIdx]),
+			UnitPrice:   parseFloat(row[unitIdx]),
+			LineTotal:   parseFloat(row[totalIdx]),
+		})
+	}
+	return out
+}
+
+func maxOf(values ...int) int {
+	m := values[0]
+	for _, v := range values[1:] {
+		if v > m {
+			m = v
+		}
+	}
+	return m
+}
+
+// splitTableRow tokenizes a single free-text row into columns. Order of attempts: tabs, CSV (commas),
+// 2+ whitespace runs (typical of OCR/PDF aligned columns), then single-space fallback.
 func splitTableRow(line string) []string {
 	line = strings.TrimSpace(line)
 	if line == "" {
@@ -513,22 +768,111 @@ func splitTableRow(line string) []string {
 		}
 		return parts
 	}
-	r := csv.NewReader(strings.NewReader(line))
-	r.FieldsPerRecord = -1
-	if rec, err := r.Read(); err == nil && len(rec) > 1 {
-		return rec
+	if strings.Contains(line, ",") {
+		r := csv.NewReader(strings.NewReader(line))
+		r.FieldsPerRecord = -1
+		if rec, err := r.Read(); err == nil && len(rec) > 1 {
+			for i := range rec {
+				rec[i] = strings.TrimSpace(rec[i])
+			}
+			return rec
+		}
+	}
+	if multiSpaceRe.MatchString(line) {
+		raw := multiSpaceRe.Split(line, -1)
+		out := make([]string, 0, len(raw))
+		for _, p := range raw {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+		if len(out) > 1 {
+			return out
+		}
 	}
 	return strings.Fields(line)
 }
 
-func readRowValue(row []string, idx int) string {//dobijamo vrednost kolone iz reda
-	if idx < 0 || idx >= len(row) {//ako je index negativan ili veći od dužine reda, vraćamo prazan string
+func readRowValue(row []string, idx int) string {
+	if idx < 0 || idx >= len(row) {
 		return ""
 	}
-	return strings.TrimSpace(row[idx])//ovde vraćamo vrednost kolone
+	return strings.TrimSpace(row[idx])
 }
 
+// parseFloat is a forgiving wrapper around extractFloat, returning 0 when no number is found.
+// Callers that need to distinguish "missing" from "explicit zero" should use extractFloat directly.
 func parseFloat(v string) float64 {
-	f, _ := strconv.ParseFloat(strings.TrimSpace(v), 64)//ovde pretvaramo string u float64
-	return f//ovde vraćamo float64
+	n, _ := extractFloat(v)
+	return n
+}
+
+// extractFloat pulls a numeric value from free-form text (currency markers, thousand separators,
+// trailing units etc.). Returns ok=false when no digit is present so callers can avoid overwriting
+// previously parsed values with a default zero.
+func extractFloat(v string) (float64, bool) {
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return 0, false
+	}
+	var b strings.Builder
+	hasDigit := false
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			hasDigit = true
+		case r == '.' || r == ',' || r == '-':
+			b.WriteRune(r)
+		}
+	}
+	if !hasDigit {
+		return 0, false
+	}
+	cleaned := b.String()
+	hasDot := strings.Contains(cleaned, ".")
+	hasComma := strings.Contains(cleaned, ",")
+	switch {
+	case hasDot && hasComma:
+		// Use whichever separator appears LAST as the decimal point and drop the other entirely.
+		if strings.LastIndex(cleaned, ",") > strings.LastIndex(cleaned, ".") {
+			cleaned = strings.ReplaceAll(cleaned, ".", "")
+			cleaned = strings.Replace(cleaned, ",", ".", 1)
+			cleaned = strings.ReplaceAll(cleaned, ",", "")
+		} else {
+			cleaned = strings.ReplaceAll(cleaned, ",", "")
+		}
+	case hasComma && !hasDot:
+		// Single comma is treated as a decimal separator (EU style); multiple commas drop them all.
+		if strings.Count(cleaned, ",") == 1 {
+			cleaned = strings.Replace(cleaned, ",", ".", 1)
+		} else {
+			cleaned = strings.ReplaceAll(cleaned, ",", "")
+		}
+	}
+	f, err := strconv.ParseFloat(cleaned, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+// detectCurrency returns an uppercase 3-letter currency hint when the input contains a known code or symbol.
+// Empty result means the caller should not overwrite an already known currency.
+func detectCurrency(v string) string {
+	upper := strings.ToUpper(v)
+	for _, c := range []string{"EUR", "USD", "GBP", "CHF", "RSD", "BAM", "HRK"} {
+		if strings.Contains(upper, c) {
+			return c
+		}
+	}
+	switch {
+	case strings.Contains(v, "€"):
+		return "EUR"
+	case strings.Contains(v, "$"):
+		return "USD"
+	case strings.Contains(v, "£"):
+		return "GBP"
+	}
+	return ""
 }

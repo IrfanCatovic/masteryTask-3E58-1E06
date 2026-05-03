@@ -317,8 +317,7 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB, uploadOpts UploadOption
 		}
 
 		var doc Document
-		if err := gormDB.First(&doc, uint(id)).Error; err != nil {
-			//ovde nadjemo document po id-u
+		if err := gormDB.Preload("LineItems").Preload("Issues").First(&doc, uint(id)).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				c.JSON(http.StatusNotFound, gin.H{
 					"status":  "error",
@@ -333,6 +332,20 @@ func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB, uploadOpts UploadOption
 				"error":   err.Error(),
 			})
 			return
+		}
+
+		// Guard: cannot mark a document "validated" while it still has missing required fields or
+		// unresolved error-severity issues. The reviewer must fix the data first.
+		if req.Status == "validated" {
+			if blockers := blockersForValidation(doc); len(blockers) > 0 {
+				c.JSON(http.StatusConflict, gin.H{
+					"status":   "error",
+					"code":     "VALIDATION_BLOCKED",
+					"message":  "cannot validate while required fields are missing or unresolved error issues remain",
+					"blockers": blockers,
+				})
+				return
+			}
 		}
 
 		if err := gormDB.Model(&doc).Update("status", req.Status).Error; err != nil {
@@ -660,4 +673,26 @@ func issuesForDuplicateDocumentNumberExcluding(db *gorm.DB, documentNumber strin
 		FieldName: "document_number",
 		Resolved:  false,
 	}}, nil
+}
+
+// blockersForValidation returns the human-readable reasons that prevent a document from being moved
+// to "validated" status: missing required fields and any unresolved error-severity issues. An empty
+// slice means validation is allowed.
+func blockersForValidation(doc Document) []string {
+	blockers := make([]string, 0)
+	if strings.TrimSpace(doc.DocumentType) == "" {
+		blockers = append(blockers, "document_type is required")
+	}
+	if strings.TrimSpace(doc.SupplierName) == "" {
+		blockers = append(blockers, "supplier_name is required")
+	}
+	if strings.TrimSpace(doc.DocumentNumber) == "" {
+		blockers = append(blockers, "document_number is required")
+	}
+	for _, iss := range doc.Issues {
+		if !iss.Resolved && iss.Severity == IssueSeverityError {
+			blockers = append(blockers, "unresolved error: "+iss.Code)
+		}
+	}
+	return blockers
 }

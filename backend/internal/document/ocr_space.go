@@ -36,7 +36,17 @@ func OCRSpaceExtractText(ctx context.Context, apiKey string, imageBytes []byte, 
 	if err := mp.WriteField("isOverlayRequired", "false"); err != nil {
 		return "", err
 	}
-	if err := mp.WriteField("OCREngine", "1"); err != nil {
+	// Engine 2 handles invoice-style layouts noticeably better than the legacy engine.
+	if err := mp.WriteField("OCREngine", "2"); err != nil {
+		return "", err
+	}
+	// isTable=true returns columns aligned with multi-space gaps so the downstream table parser can
+	// recover qty/unit price/line total positionally, even without standard column headers.
+	if err := mp.WriteField("isTable", "true"); err != nil {
+		return "", err
+	}
+	// scale=true upsamples small images before OCR — frequent quality boost for screenshots.
+	if err := mp.WriteField("scale", "true"); err != nil {
 		return "", err
 	}
 

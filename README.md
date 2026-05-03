@@ -79,6 +79,25 @@ Keep **`.env` gitignored**; use [`.env.example`](backend/.env.example) for **nam
 
 ---
 
+## Supported file formats
+
+The same parsing pipeline backs every upload type — extract text → detect labelled fields → detect a line-item table — so the rules below apply uniformly.
+
+| Format | What works | What breaks gracefully |
+|--------|------------|------------------------|
+| **CSV** | Document fields and line items via flexible column names: long (`description`, `quantity`, `unit_price`, `line_total`) or short (`desc`, `qty`, `price`, `total`). Document total comes from `grand_total` / `invoice_total` / `document_total` if present, otherwise it is the sum of line totals. | Missing required document fields are flagged as `MISSING_FIELD` issues; status drops to `needs_review`. |
+| **TXT** | `Label: value` lines are recognised case-insensitively (incl. `Total Due`, `Grand Total`, `Amount Due`, `Invoice No.`). Numeric values tolerate currency symbols and thousand separators (`$3,960.00`, `1.234,56`, `406 EUR`). A simple table (header row + rows separated by tabs, commas, or 2+ spaces) populates line items. | If only a title and total are present, line items remain empty and the document opens in `needs_review`. |
+| **PDF** | Digital PDFs are read page-by-page and converted to a layout-preserving text block (rows joined by 2+ spaces) before going through the TXT parser. | Image-only / scanned PDFs fall back to OCR via OCR.space when `OCR_SPACE_API_KEY` is configured; otherwise a `PDF_NO_EXTRACTABLE_TEXT` issue is added and the document is saved in `needs_review`. |
+| **Images (PNG/JPEG/WebP)** | Routed through OCR.space with `isTable=true` and OCR engine 2 to recover aligned columns; the rest of the parser is identical to TXT. | Requires a real OCR.space API key on the server; when text recognition is empty an `IMAGE_OCR_EMPTY` issue is recorded. |
+
+### Status rules
+
+- A document is set to `needs_review` whenever validation produces any issue (missing required field, math mismatch, invalid date, missing currency, etc.).
+- `PATCH /documents/:id/status` refuses to set `validated` while required fields are blank or any **unresolved error-severity** issue remains; it returns HTTP 409 with a `blockers` list explaining why.
+- Other transitions (`uploaded`, `needs_review`, `rejected`) are unaffected.
+
+---
+
 ## Repository layout (high level)
 
 ```text
