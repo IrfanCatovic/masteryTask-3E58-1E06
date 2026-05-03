@@ -9,13 +9,16 @@ import (
 )
 
 type Config struct {
-	DBHost     string
-	DBUser     string
-	DBPassword string
-	DBName     string
-	DBPort     string
-	DBSSLMode  string
-	DBTimeZone string
+	// DatabaseURL, when non-empty, is used as the full Postgres DSN (e.g. Neon DATABASE_URL).
+	// If empty, DBHost…DBTimeZone are required instead.
+	DatabaseURL string
+	DBHost      string
+	DBUser      string
+	DBPassword  string
+	DBName      string
+	DBPort      string
+	DBSSLMode   string
+	DBTimeZone  string
 	// Optional: image uploads use OCR.space; leave empty to disable image ingestion only.
 	OCRSpaceAPIKey string
 	// CORSAllowedOrigins: non-empty enables CORS for those exact Origin values (e.g. Vite + prod UI).
@@ -34,6 +37,14 @@ func mustGetEnv(key string) string {
 func Load() Config {
 	if err := godotenv.Load(); err != nil {
 		log.Printf("No .env loaded (continuing with OS env): %v", err)
+	}
+
+	if u := strings.TrimSpace(os.Getenv("DATABASE_URL")); u != "" {
+		return Config{
+			DatabaseURL:        u,
+			OCRSpaceAPIKey:     strings.TrimSpace(os.Getenv("OCR_SPACE_API_KEY")),
+			CORSAllowedOrigins: splitCommaList(os.Getenv("CORS_ALLOWED_ORIGINS")),
+		}
 	}
 
 	return Config{
