@@ -243,10 +243,7 @@ func parseCSVDocument(r io.Reader) (parseResult, error) {
 		return parseResult{}, errors.New("csv is empty")
 	}
 
-	headers := make(map[string]int)
-	for i, h := range rows[0] {
-		headers[strings.ToLower(strings.TrimSpace(h))] = i
-	}
+	headers := buildCSVHeaderIndex(rows[0])
 
 	var first []string
 	if len(rows) >= 2 {
@@ -315,6 +312,40 @@ func parseCSVDocument(r io.Reader) (parseResult, error) {
 	}
 
 	return parseResult{Document: doc, ParseIssues: parseIssues}, nil
+}
+
+// buildCSVHeaderIndex maps the header row to column indices, including aliases for line-item
+// exports that use short names (desc, qty, price, total) instead of description, quantity, etc.
+func buildCSVHeaderIndex(headerRow []string) map[string]int {
+	headers := make(map[string]int)
+	for i, h := range headerRow {
+		key := strings.ToLower(strings.TrimSpace(h))
+		registerLineItemColumnAliases(headers, key, i)
+	}
+	return headers
+}
+
+// registerLineItemColumnAliases wires canonical keys expected by parseCSVDocument line-item logic.
+func registerLineItemColumnAliases(headers map[string]int, rawLower string, colIdx int) {
+	if rawLower == "" {
+		return
+	}
+	headers[rawLower] = colIdx
+	switch rawLower {
+	case "desc", "description", "item", "name":
+		headers["description"] = colIdx
+	case "qty", "quantity", "q":
+		headers["quantity"] = colIdx
+	case "price", "unit_price", "unitprice", "rate", "unit":
+		headers["unit_price"] = colIdx
+	case "line_total", "line total", "amount", "amt":
+		headers["line_total"] = colIdx
+	case "total":
+		headers["total"] = colIdx
+		if _, ok := headers["line_total"]; !ok {
+			headers["line_total"] = colIdx
+		}
+	}
 }
 
 func parseTXTDocument(r io.Reader) (parseResult, error) {
@@ -409,7 +440,84 @@ func parseTXTDocument(r io.Reader) (parseResult, error) {
 		}
 	}
 
+	if len(doc.LineItems) == 0 {
+		doc.LineItems = parseLineItemsTableFromLines(lines)
+	}
+
 	return parseResult{Document: doc, ParseIssues: parseIssues}, nil
+}
+
+// parseLineItemsTableFromLines finds a header row (desc/qty/price/total or equivalents) and
+// parses following rows into LineItems. Helps OCR/PDF text and plain-text invoice dumps.
+func parseLineItemsTableFromLines(lines []string) []LineItem {
+	var out []LineItem
+	for i := 0; i < len(lines); i++ {
+		cells := splitTableRow(lines[i])
+		if len(cells) < 4 {
+			continue
+		}
+		h := make(map[string]int)
+		for j, c := range cells {
+			key := strings.ToLower(strings.TrimSpace(c))
+			registerLineItemColumnAliases(h, key, j)
+		}
+		if _, ok := h["description"]; !ok {
+			continue
+		}
+		if _, ok := h["quantity"]; !ok {
+			continue
+		}
+		if _, ok := h["unit_price"]; !ok {
+			continue
+		}
+		if _, ok := h["line_total"]; !ok {
+			continue
+		}
+		maxIdx := h["description"]
+		for _, k := range []string{"quantity", "unit_price", "line_total"} {
+			if h[k] > maxIdx {
+				maxIdx = h[k]
+			}
+		}
+		for j := i + 1; j < len(lines); j++ {
+			row := splitTableRow(lines[j])
+			if len(row) <= maxIdx {
+				break
+			}
+			item := LineItem{
+				Description: readRowValue(row, h["description"]),
+				Quantity:    parseFloat(readRowValue(row, h["quantity"])),
+				UnitPrice:   parseFloat(readRowValue(row, h["unit_price"])),
+				LineTotal:   parseFloat(readRowValue(row, h["line_total"])),
+			}
+			if strings.TrimSpace(item.Description) == "" {
+				continue
+			}
+			out = append(out, item)
+		}
+		break
+	}
+	return out
+}
+
+func splitTableRow(line string) []string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil
+	}
+	if strings.Contains(line, "\t") {
+		parts := strings.Split(line, "\t")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		return parts
+	}
+	r := csv.NewReader(strings.NewReader(line))
+	r.FieldsPerRecord = -1
+	if rec, err := r.Read(); err == nil && len(rec) > 1 {
+		return rec
+	}
+	return strings.Fields(line)
 }
 
 func readRowValue(row []string, idx int) string {//dobijamo vrednost kolone iz reda
