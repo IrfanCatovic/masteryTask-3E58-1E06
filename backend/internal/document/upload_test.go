@@ -172,3 +172,59 @@ func TestDetectCurrency(t *testing.T) {
 		}
 	}
 }
+
+// PDF/OCR pipelines often flatten "From: ACME  Number: INV-1  Date: 2024-01-01" into a single line.
+// The parser must split it on inline labels so each field reaches the right document property
+// instead of being absorbed into the first label's value.
+func TestParseTXTSplitsInlineLabels(t *testing.T) {
+	txt := "From: ACME Corp  Number: INV-9001  Date: 2024-05-01\nTotal: 250.00 EUR\n"
+	res, err := parseTXTDocument(strings.NewReader(txt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Document.SupplierName != "ACME Corp" {
+		t.Fatalf("supplier_name want %q got %q", "ACME Corp", res.Document.SupplierName)
+	}
+	if res.Document.DocumentNumber != "INV-9001" {
+		t.Fatalf("document_number want %q got %q", "INV-9001", res.Document.DocumentNumber)
+	}
+	if res.Document.IssueDate == nil {
+		t.Fatalf("issue_date should be parsed from Date: 2024-05-01")
+	}
+	if !approxEqual(res.Document.Total, 250) {
+		t.Fatalf("total want 250 got %g", res.Document.Total)
+	}
+}
+
+// Compound labels like "Total Due" must survive inline splitting — otherwise OCR/PDF text that
+// glues several "Label: value" pairs onto one line would orphan the first half of the label.
+func TestParseTXTKeepsCompoundLabels(t *testing.T) {
+	txt := "Total Due: $3960.00 Currency: USD\n"
+	res, err := parseTXTDocument(strings.NewReader(txt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approxEqual(res.Document.Total, 3960) {
+		t.Fatalf("Total Due want 3960 got %g", res.Document.Total)
+	}
+	if res.Document.Currency != "USD" {
+		t.Fatalf("Currency want USD got %q", res.Document.Currency)
+	}
+}
+
+// A line whose first non-colon row is a table header (e.g. "Description Qty Unit Price Total")
+// must NOT be promoted to "<type> <number>" — that's how PDFs ended up with
+// document_type="description" / document_number="qty".
+func TestParseTXTTitleSkipsTableHeader(t *testing.T) {
+	txt := "Description Qty Unit Price Total\nType: invoice\nNumber: INV-42\nWidget 2 10 20\n"
+	res, err := parseTXTDocument(strings.NewReader(txt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Document.DocumentType != "invoice" {
+		t.Fatalf("document_type want invoice got %q", res.Document.DocumentType)
+	}
+	if res.Document.DocumentNumber != "INV-42" {
+		t.Fatalf("document_number want INV-42 got %q", res.Document.DocumentNumber)
+	}
+}

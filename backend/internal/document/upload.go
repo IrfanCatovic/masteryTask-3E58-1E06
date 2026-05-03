@@ -26,6 +26,30 @@ var multiSpaceRe = regexp.MustCompile(`[ \t]{2,}`)
 // The "no/number/#" marker is required so a bare "INVOICE" line doesn't get mistaken for the number itself.
 var invoiceNumberRe = regexp.MustCompile(`(?i)(?:invoice|document|order|receipt|po|bill)\s*(?:no\.?|number|num\.?|#)\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9\-_/]{0,40})`)
 
+// inlineLabelRe finds an embedded "Label:" inside an already-running line — used to split rows like
+// "From: ACME  Number: INV-1  Date: 2024-01-01" that PDF/OCR text sometimes flattens into one line.
+// The label is one alphabetic token (no spaces) so we don't accidentally swallow values; splits are
+// only honoured when the prefix already carries its own colon (see splitInlineLabels), which keeps
+// compound labels like "Total Due" intact.
+var inlineLabelRe = regexp.MustCompile(`\s([A-Za-z][A-Za-z\-_]{1,30}):\s`)
+
+// titleTypeKeywords are the only first-tokens that may promote a colon-less first line into
+// "<type> <number>". This prevents table headers like "Description Qty Unit Price" from being
+// misread as the document title.
+var titleTypeKeywords = map[string]struct{}{
+	"invoice":   {},
+	"receipt":   {},
+	"bill":      {},
+	"order":     {},
+	"purchase":  {},
+	"po":        {},
+	"quote":     {},
+	"quotation": {},
+	"faktura":   {},
+	"racun":     {},
+	"račun":     {},
+}
+
 // UploadOptions configures optional behaviour for multipart ingestion (e.g. OCR.space for images).
 type UploadOptions struct {
 	OCRSpaceAPIKey string
@@ -466,17 +490,23 @@ func parseTXTDocument(r io.Reader) (parseResult, error) {
 	parseIssues := make([]ValidationIssue, 0)
 	lines := splitNonEmptyLines(rawText)
 
-	// First non-empty line acts as a "Title Number" header (e.g. "Invoice TXT-1") only when it
-	// doesn't carry its own colon-separated payload — otherwise we let the key/value pass handle it.
+	// First non-empty line acts as a "Title Number" header (e.g. "Invoice TXT-1") only when its
+	// first token is a recognised document-type keyword. This stops table headers like
+	// "Description Qty Unit Price Total" from polluting type/number.
 	if len(lines) > 0 && !strings.Contains(lines[0], ":") {
 		if titleParts := strings.Fields(lines[0]); len(titleParts) >= 2 {
-			doc.DocumentType = strings.ToLower(titleParts[0])
-			doc.DocumentNumber = strings.TrimSpace(titleParts[1])
+			first := strings.ToLower(titleParts[0])
+			if _, ok := titleTypeKeywords[first]; ok {
+				doc.DocumentType = first
+				doc.DocumentNumber = strings.TrimSpace(titleParts[1])
+			}
 		}
 	}
 
 	for _, line := range lines {
-		applyKeyValueLine(line, &doc, &parseIssues)
+		for _, segment := range splitInlineLabels(line) {
+			applyKeyValueLine(segment, &doc, &parseIssues)
+		}
 	}
 
 	// Heuristic: if document number is still missing, look for "Invoice No. X" / "INVOICE #X" anywhere.
@@ -504,6 +534,45 @@ func parseTXTDocument(r io.Reader) (parseResult, error) {
 	}
 
 	return parseResult{Document: doc, ParseIssues: parseIssues}, nil
+}
+
+// splitInlineLabels breaks a flattened line that contains multiple "Label: value" pairs into one
+// segment per pair. Many PDF/OCR pipelines lose newlines between fields, leaving us with strings
+// like "From: ACME  Number: INV-1  Date: 2024-01-01" that the colon-based parser would otherwise
+// dump entirely into the first label's value. The regex requires a whitespace boundary before the
+// label so timestamps like "12:30 PM" inside a value stay intact.
+func splitInlineLabels(line string) []string {
+	if !strings.Contains(line, ":") {
+		return []string{line}
+	}
+	idxs := inlineLabelRe.FindAllStringIndex(line, -1)
+	if len(idxs) == 0 {
+		return []string{line}
+	}
+	parts := make([]string, 0, len(idxs)+1)
+	prev := 0
+	for _, idx := range idxs {
+		// idx[0] sits on the whitespace before the label; we cut just after it so the label
+		// starts the next segment.
+		split := idx[0] + 1
+		// Only honour the cut when the prefix already carries its own colon. Without that,
+		// what we matched is just the second word of a compound label like "Total Due" — splitting
+		// there would leave both halves orphaned.
+		if !strings.Contains(line[prev:split], ":") {
+			continue
+		}
+		if seg := strings.TrimSpace(line[prev:split]); seg != "" {
+			parts = append(parts, seg)
+		}
+		prev = split
+	}
+	if tail := strings.TrimSpace(line[prev:]); tail != "" {
+		parts = append(parts, tail)
+	}
+	if len(parts) == 0 {
+		return []string{line}
+	}
+	return parts
 }
 
 // splitNonEmptyLines normalises CRLF/CR endings and drops empty lines so downstream parsers can
