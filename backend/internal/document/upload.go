@@ -2,6 +2,7 @@ package document
 
 import (
 	"bytes"
+	"context"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -17,7 +18,12 @@ import (
 	"gorm.io/gorm"
 )
 
-func registerUploadRoutes(router *gin.Engine, gormDB *gorm.DB) {
+// UploadOptions configures optional behaviour for multipart ingestion (e.g. OCR.space for images).
+type UploadOptions struct {
+	OCRSpaceAPIKey string
+}
+
+func registerUploadRoutes(router *gin.Engine, gormDB *gorm.DB, uploadOpts UploadOptions) {
 	// Upload and ingest a CSV or TXT document file.
 	router.POST("/documents/upload", func(c *gin.Context) {
 		fileHeader, err := c.FormFile("file")
@@ -29,7 +35,7 @@ func registerUploadRoutes(router *gin.Engine, gormDB *gorm.DB) {
 			return
 		}
 
-		parsed, parseErr := parseUploadedDocument(fileHeader)
+		parsed, parseErr := parseUploadedDocument(c.Request.Context(), fileHeader, uploadOpts)
 		if parseErr != nil {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"status":  "error",
@@ -133,7 +139,7 @@ func registerUploadRoutes(router *gin.Engine, gormDB *gorm.DB) {
 	})
 }
 
-func parseUploadedDocument(fileHeader *multipart.FileHeader) (parseResult, error) {
+func parseUploadedDocument(ctx context.Context, fileHeader *multipart.FileHeader, opts UploadOptions) (parseResult, error) {
 	file, err := fileHeader.Open()
 	if err != nil {
 		return parseResult{}, err
@@ -148,9 +154,38 @@ func parseUploadedDocument(fileHeader *multipart.FileHeader) (parseResult, error
 		return parseTXTDocument(file)
 	case ".pdf":
 		return parsePDFDocument(file)
+	case ".png", ".jpg", ".jpeg", ".webp":
+		return parseImageDocument(ctx, file, fileHeader.Filename, opts)
 	default:
-		return parseResult{}, errors.New("unsupported file type; use .csv, .txt, or .pdf")
+		return parseResult{}, errors.New("unsupported file type; use .csv, .txt, .pdf, or a supported image (.png, .jpg, .jpeg, .webp)")
 	}
+}
+
+// parseImageDocument runs OCR via OCR.space then reuses the TXT document parser.
+func parseImageDocument(ctx context.Context, r io.Reader, filename string, opts UploadOptions) (parseResult, error) {
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return parseResult{}, err
+	}
+	text, err := OCRSpaceExtractText(ctx, opts.OCRSpaceAPIKey, b, filename)
+	if err != nil {
+		return parseResult{}, err
+	}
+	text = strings.TrimSpace(text)
+
+	res, err := parseTXTDocument(strings.NewReader(text))
+	if err != nil {
+		return parseResult{}, err
+	}
+	if text == "" {
+		res.ParseIssues = append(res.ParseIssues, ValidationIssue{
+			Code:      IssueCodeImageOCREmpty,
+			Message:   "no text recognized in image (try clearer scan or different lighting)",
+			Severity:  IssueSeverityError,
+			Resolved:  false,
+		})
+	}
+	return res, nil
 }
 
 // parsePDFDocument extracts plain text with github.com/ledongthuc/pdf and reuses the TXT parser.

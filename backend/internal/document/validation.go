@@ -14,6 +14,7 @@ const (
 	IssueCodeMissingCurrency    = "MISSING_CURRENCY"
 	IssueCodeInvalidDateRange   = "INVALID_DATE_RANGE"
 	IssueCodeInvalidDate        = "INVALID_DATE"
+	IssueCodeImageOCREmpty     = "IMAGE_OCR_EMPTY"
 	IssueSeverityError          = "error"
 	DefaultMoneyEpsilon float64 = 0.01
 )

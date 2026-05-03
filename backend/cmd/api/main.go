@@ -71,7 +71,9 @@ func main() {
 	})
 
 	// Register domain routes from dedicated packages.
-	document.RegisterRoutes(router, gormDB)
+	document.RegisterRoutes(router, gormDB, document.UploadOptions{
+		OCRSpaceAPIKey: cfg.OCRSpaceAPIKey,
+	})
 
 	if err := router.Run(":8080"); err != nil {
 		log.Fatalf("Failed to start HTTP server: %v", err)

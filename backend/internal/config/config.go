@@ -1,9 +1,9 @@
 package config
 
-
 import (
 	"log"
 	"os"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -16,6 +16,8 @@ type Config struct {
 	DBPort     string
 	DBSSLMode  string
 	DBTimeZone string
+	// Optional: image uploads use OCR.space; leave empty to disable image ingestion only.
+	OCRSpaceAPIKey string
 }
 
 func mustGetEnv(key string) string {
@@ -39,5 +41,6 @@ func Load() Config {
 		DBPort:     mustGetEnv("DB_PORT"),
 		DBSSLMode:  mustGetEnv("DB_SSLMODE"),
 		DBTimeZone: mustGetEnv("DB_TIMEZONE"),
+		OCRSpaceAPIKey: strings.TrimSpace(os.Getenv("OCR_SPACE_API_KEY")),
 	}
 }

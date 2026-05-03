@@ -54,8 +54,8 @@ var allowedStatuses = map[string]struct{}{
 }
 
 
-func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB) {
-	registerUploadRoutes(router, gormDB)
+func RegisterRoutes(router *gin.Engine, gormDB *gorm.DB, uploadOpts UploadOptions) {
+	registerUploadRoutes(router, gormDB, uploadOpts)
 
 	router.POST("/documents", func(c *gin.Context) {
 		var req createDocumentRequest
