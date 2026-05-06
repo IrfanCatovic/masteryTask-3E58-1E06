@@ -14,6 +14,8 @@ const FILTERS: { label: string; value: string | undefined }[] = [
   { label: 'Rejected', value: 'rejected' },
 ]
 
+const PAGE_SIZE = 6
+
 function totalValue(documents: Document[]): number {
   return documents.reduce((sum, doc) => sum + (doc.total ?? 0), 0)
 }
@@ -25,6 +27,7 @@ export function DocumentsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [duplicateModalOpen, setDuplicateModalOpen] = useState(false)
+  const [page, setPage] = useState(1)
 
   const loadDocuments = useCallback(async () => {
     setLoading(true)
@@ -44,6 +47,10 @@ export function DocumentsPage() {
     void loadDocuments()
   }, [loadDocuments])
 
+  useEffect(() => {
+    setPage(1)
+  }, [filter])
+
   const stats = useMemo(() => {
     const needsReview = documents.filter((d) => d.status === 'needs_review').length
     const validated = documents.filter((d) => d.status === 'validated').length
@@ -54,6 +61,19 @@ export function DocumentsPage() {
       total: totalValue(documents),
     }
   }, [documents])
+
+  const totalPages = Math.max(1, Math.ceil(documents.length / PAGE_SIZE))
+  const safePage = Math.min(page, totalPages)
+  const pageStart = (safePage - 1) * PAGE_SIZE
+  const pageDocuments = documents.slice(pageStart, pageStart + PAGE_SIZE)
+  const rangeFrom = documents.length === 0 ? 0 : pageStart + 1
+  const rangeTo = pageStart + pageDocuments.length
+
+  useEffect(() => {
+    if (page !== safePage) {
+      setPage(safePage)
+    }
+  }, [page, safePage])
 
   return (
     <section className="space-y-6">
@@ -154,7 +174,66 @@ export function DocumentsPage() {
           )}
 
           {!loading && !error && (
-            <DocumentTable documents={documents} onDocumentDeleted={() => void loadDocuments()} />
+            <>
+              <DocumentTable
+                documents={pageDocuments}
+                onDocumentDeleted={() => void loadDocuments()}
+              />
+
+              {documents.length > 0 && (
+                <div className="mt-5 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs text-slate-500">
+                    Showing <span className="font-semibold text-slate-700">{rangeFrom}</span>–
+                    <span className="font-semibold text-slate-700">{rangeTo}</span> of{' '}
+                    <span className="font-semibold text-slate-700">{documents.length}</span>
+                  </p>
+
+                  {totalPages > 1 && (
+                    <nav
+                      className="flex flex-wrap items-center gap-1.5"
+                      aria-label="Pagination"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                        disabled={safePage === 1}
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white"
+                      >
+                        Prev
+                      </button>
+
+                      {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => {
+                        const active = p === safePage
+                        return (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => setPage(p)}
+                            aria-current={active ? 'page' : undefined}
+                            className={`min-w-[2.25rem] rounded-lg px-3 py-1.5 text-sm font-semibold transition ${
+                              active
+                                ? 'bg-slate-950 text-white shadow-sm'
+                                : 'border border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                            }`}
+                          >
+                            {p}
+                          </button>
+                        )
+                      })}
+
+                      <button
+                        type="button"
+                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                        disabled={safePage === totalPages}
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white"
+                      >
+                        Next
+                      </button>
+                    </nav>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
