@@ -18,7 +18,7 @@ export function UploadForm({ onSuccess, onDuplicate }: Props) {
     const input = e.currentTarget.elements.namedItem('file') as HTMLInputElement
     const file = input.files?.[0]
     if (!file) {
-      setError('Choose a CSV, TXT, PDF, or image file.')
+      setError('Choose a CSV, TXT, or PDF file.')
       return
     }
     setBusy(true)
@@ -57,16 +57,14 @@ export function UploadForm({ onSuccess, onDuplicate }: Props) {
             Upload document
           </label>
           <p className="mt-1 text-sm text-slate-500">
-            CSV, TXT, PDF, or images (PNG/JPEG/WebP) — field name{' '}
-            <code className="font-mono text-slate-700">file</code>. Images are sent to OCR on the
-            server (configure <code className="font-mono text-slate-700">OCR_SPACE_API_KEY</code> on
-            the API). PDFs use embedded text when available.
+            CSV, TXT, or PDF — field name <code className="font-mono text-slate-700">file</code>.
+            PDFs use embedded text when available and fall back to OCR when configured on the API.
           </p>
           <input
             id="upload-file"
             name="file"
             type="file"
-            accept=".csv,.txt,.pdf,.png,.jpg,.jpeg,.webp,text/csv,text/plain,application/pdf,image/png,image/jpeg,image/webp"
+            accept=".csv,.txt,.pdf,text/csv,text/plain,application/pdf"
             disabled={busy}
             className="mt-3 block w-full text-sm text-slate-700 file:mr-4 file:rounded-lg file:border-0 file:bg-slate-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-slate-800"
           />

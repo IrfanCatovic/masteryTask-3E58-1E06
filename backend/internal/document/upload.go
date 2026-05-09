@@ -187,10 +187,8 @@ func parseUploadedDocument(ctx context.Context, fileHeader *multipart.FileHeader
 		return parseTXTDocument(file)
 	case ".pdf":
 		return parsePDFDocument(ctx, file, fileHeader.Filename, opts)
-	case ".png", ".jpg", ".jpeg", ".webp":
-		return parseImageDocument(ctx, file, fileHeader.Filename, opts)
 	default:
-		return parseResult{}, errors.New("unsupported file type; use .csv, .txt, .pdf, or a supported image (.png, .jpg, .jpeg, .webp)")
+		return parseResult{}, errors.New("unsupported file type; use .csv, .txt, or .pdf")
 	}
 }
 
@@ -229,8 +227,29 @@ func parsePDFDocument(ctx context.Context, r io.Reader, filename string, opts Up
 	if err != nil {
 		return parseResult{}, err
 	}
-	text, err := extractPDFText(b)
+	pdfBytes := normalizePDFData(b)
+	text, err := extractPDFText(pdfBytes)
 	if err != nil {
+		// Some providers prepend junk bytes before "%PDF-". If extraction still fails and OCR is
+		// configured, try OCR as a resilience path instead of hard-failing the upload.
+		if strings.TrimSpace(opts.OCRSpaceAPIKey) != "" {
+			if ocrText, ocrErr := OCRSpaceExtractText(ctx, opts.OCRSpaceAPIKey, b, filename); ocrErr == nil {
+				ocrText = strings.TrimSpace(ocrText)
+				res, parseErr := parseTXTDocument(strings.NewReader(ocrText))
+				if parseErr != nil {
+					return parseResult{}, parseErr
+				}
+				if ocrText == "" {
+					res.ParseIssues = append(res.ParseIssues, ValidationIssue{
+						Code:     "PDF_NO_EXTRACTABLE_TEXT",
+						Message:  "no extractable text in this pdf (image-only scans need OCR with a configured OCR_SPACE_API_KEY)",
+						Severity: IssueSeverityError,
+						Resolved: false,
+					})
+				}
+				return res, nil
+			}
+		}
 		return parseResult{}, fmt.Errorf("invalid or encrypted pdf: %w", err)
 	}
 	text = strings.TrimSpace(text)
@@ -321,6 +340,26 @@ func extractPDFText(data []byte) (string, error) {
 		return "", err
 	}
 	return string(raw), nil
+}
+
+// normalizePDFData trims leading junk bytes when "%PDF-" appears shortly after the file start.
+// This keeps parsing tolerant for PDFs produced by buggy exporters/proxies.
+func normalizePDFData(data []byte) []byte {
+	const maxProbe = 1024
+	if len(data) == 0 {
+		return data
+	}
+	if bytes.HasPrefix(data, []byte("%PDF-")) {
+		return data
+	}
+	probe := data
+	if len(probe) > maxProbe {
+		probe = probe[:maxProbe]
+	}
+	if idx := bytes.Index(probe, []byte("%PDF-")); idx > 0 {
+		return data[idx:]
+	}
+	return data
 }
 
 // parseResult vraća parsirani dokument zajedno sa "soft" issue-ima

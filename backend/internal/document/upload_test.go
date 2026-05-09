@@ -295,3 +295,11 @@ func TestParseTXTTitleSkipsTableHeader(t *testing.T) {
 		t.Fatalf("document_number want INV-42 got %q", res.Document.DocumentNumber)
 	}
 }
+
+func TestNormalizePDFDataTrimsLeadingJunk(t *testing.T) {
+	in := []byte("JUNK\x00\x01%PDF-1.4\n1 0 obj\n")
+	got := normalizePDFData(in)
+	if !strings.HasPrefix(string(got), "%PDF-1.4") {
+		t.Fatalf("expected normalized data to start with %%PDF-, got %q", string(got))
+	}
+}
